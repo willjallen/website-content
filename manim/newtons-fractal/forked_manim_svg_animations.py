@@ -57,7 +57,7 @@ JAVASCRIPT_UPDATE_STRUCTURE = """    timeouts.push(setTimeout(function() {
 
 
 JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED = """    timeouts.push(setTimeout(function() {
-        %s // JavaScript commands for this frame
+		%s
     }, %f))"""
 
 
@@ -221,8 +221,10 @@ class HTMLParsedVMobject:
         max_elements_ever_active_in_dom = 0 # Tracks highest index an element has occupied for display:none logic
         max_elements_initialized_in_js = 0  # Tracks elements for which create/append has been called
         previously_hidden_indices = set()
+        previous_background_color_str = None
+        previous_viewBox_str_array = None
 
-        for frame_data in self.frames_data:
+        for frame_index, frame_data in enumerate(self.frames_data):
             current_attributes_list = frame_data["attributes"]
             time = frame_data["time"]
             viewBox_str_array = frame_data["viewBox_str_array"]
@@ -240,10 +242,12 @@ class HTMLParsedVMobject:
                 max_elements_initialized_in_js = len(current_attributes_list)
             
             # Update max_elements_ever_active_in_dom for display:none logic
-            if len(current_attributes_list) > max_elements_ever_active_in_dom:
-                max_elements_ever_active_in_dom = len(current_attributes_list)
-            elif len(previous_attributes_list) > max_elements_ever_active_in_dom: # Handles cases where elements are removed
-                 max_elements_ever_active_in_dom = len(previous_attributes_list)
+            current_len = len(current_attributes_list)
+            prev_len = len(previous_attributes_list)
+            if current_len > max_elements_ever_active_in_dom:
+                max_elements_ever_active_in_dom = current_len
+            if prev_len > max_elements_ever_active_in_dom: # Check previous_attributes_list as well, as elements might have been removed
+                max_elements_ever_active_in_dom = prev_len
 
             # Attribute diffing and updates
             for i in range(max_elements_ever_active_in_dom):
@@ -266,22 +270,43 @@ class HTMLParsedVMobject:
                     if i in previously_hidden_indices: # Element was hidden, now active
                         frame_js_changes += f"       {el_var_name}.style.display = '';\n"
                 else:
-                    # Element el_i is inactive (it existed before or is within max_elements_ever_active_in_dom but not in this frame's active list)
-                    if i < max_elements_initialized_in_js: # Only hide if it was actually initialized
+                    # Element el_i is inactive
+                    # Only hide if it was initialized and was not already hidden in the previous frame state
+                    if i < max_elements_initialized_in_js and i not in previously_hidden_indices:
                         frame_js_changes += f"       {el_var_name}.style.display = 'none';\n"
                         current_frame_newly_hidden_indices.add(i)
+                    elif i < max_elements_initialized_in_js and i in previously_hidden_indices:
+                        # It was already hidden, ensure it's part of the current hidden set if it remains hidden
+                        current_frame_newly_hidden_indices.add(i)
 
-            frame_js_changes += f"     {svg_container_var_name}.style.backgroundColor = '{background_color_str}';\n"
+            # Update background color only if it changed
+            if background_color_str != previous_background_color_str:
+                frame_js_changes += f"     {svg_container_var_name}.style.backgroundColor = '{background_color_str}';\n"
+                previous_background_color_str = background_color_str
 
-            if viewBox_str_array:
-                viewBox_value = ' '.join(viewBox_str_array)
-                frame_js_changes += f"     {svg_container_var_name}.setAttribute('viewBox', '{viewBox_value}');\n"
+            # Update viewBox only if it changed
+            if viewBox_str_array != previous_viewBox_str_array:
+                if viewBox_str_array is not None: # Ensure it's not None before joining, if it became null
+                    viewBox_value = ' '.join(viewBox_str_array)
+                    frame_js_changes += f"     {svg_container_var_name}.setAttribute('viewBox', '{viewBox_value}');\n"
+                else: 
+                    # If current is None but previous wasn't, we might need to remove or reset it if applicable.
+                    # For now, we assume setAttribute handles null by not changing or removing.
+                    # If specific removal behavior is needed, it can be added here.
+                    pass 
+                previous_viewBox_str_array = viewBox_str_array
 
-            self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED % (
-                frame_js_changes.rstrip('\n'),
-                1000 * time
-            )
-            self.js_updates += "\n"
+            # Add replaceChildren() for the very first frame to clear previous looped content
+            if frame_index == 0:
+                frame_js_changes = f"        {svg_container_var_name}.replaceChildren();\n" + frame_js_changes
+
+            # Only add a timeout if there are actual changes for this frame
+            if frame_js_changes.strip():
+                self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED % (
+                    frame_js_changes.rstrip('\n'),
+                    1000 * time
+                )
+                self.js_updates += "\n"
             previous_attributes_list = current_attributes_list
             previously_hidden_indices = current_frame_newly_hidden_indices
 
@@ -290,7 +315,7 @@ class HTMLParsedVMobject:
         js_content = JAVASCRIPT_STRUCTURE % (
             self.filename_base.lower(),
             self.filename_base,
-            global_el_vars_js, # For global el declarations
+            global_el_vars_js,
             self.filename_base,
             self.js_updates,
             1000 * self.last_t
