@@ -3,6 +3,7 @@ from manim_mobject_svg import *
 from svgpathtools import svg2paths
 import itertools
 import os
+import re
 
 
 HTML_STRUCTURE = """<!DOCTYPE html>
@@ -112,8 +113,8 @@ class HTMLParsedVMobject:
         self.vmobject = vmobject
         self.scene = scene
         self.filename_base = scene.__class__.__name__
-        self.html_filename = self.filename_base + ".html"
-        self.js_filename = self.filename_base + ".js"
+        self.html_filename = os.path.join('media', 'svg_animations', self.filename_base + '.html')
+        self.js_filename = os.path.join('media', 'svg_animations', self.filename_base + '.js')
         self.current_index = 0
         self.final_html_body = ""
         self.width = width
@@ -125,6 +126,93 @@ class HTMLParsedVMobject:
         self.original_frame_width = self.scene.camera.frame_width
         self.original_frame_height = self.scene.camera.frame_height
         self.scene.add_updater(self.updater)
+    
+    def _round_attribute_value(self, key: str, value_str: str, precision: int = 2) -> str:
+        if not isinstance(value_str, str):
+            return value_str # Should generally be a string from svg2paths attributes
+
+        if key == 'd':
+            # Simpler rounding for path data: find numbers and round them
+            def round_d_match(match):
+                try:
+                    num = float(match.group(0))
+                    return str(round(num, precision))
+                except ValueError:
+                    return match.group(0) # Should not happen with this regex
+            try:
+                return re.sub(r"[+-]?\d*\.?\d+([eE][+-]?\d+)?", round_d_match, value_str)
+            except Exception:
+                 return value_str
+        
+        simple_numeric_keys = ['fill-opacity', 'stroke-opacity', 'stroke-width', 'opacity', 'stroke-miterlimit']
+        if key in simple_numeric_keys:
+            try:
+                val_float = float(value_str)
+                # For small fractional values, try to maintain some significant digits
+                if 0 < abs(val_float) < 1:
+                    # Count leading zeros after decimal point for small positive numbers
+                    s_val = str(val_float)
+                    if '.' in s_val:
+                        decimals = s_val.split('.', 1)[1]
+                        leading_zeros = 0
+                        for char_digit in decimals:
+                            if char_digit == '0':
+                                leading_zeros += 1
+                            else:
+                                break
+                        # Aim for 2 significant digits after leading zeros
+                        effective_precision = leading_zeros + 2 
+                        return str(round(val_float, effective_precision))
+                return str(round(val_float, precision))
+            except ValueError:
+                return value_str # e.g., if value is "inherit"
+
+        if value_str.startswith("rgb(") or value_str.startswith("rgba("):
+            is_rgba = value_str.startswith("rgba(")
+            prefix = "rgba(" if is_rgba else "rgb("
+            
+            try:
+                content = value_str[len(prefix):-1]
+                parts_str_list = content.split(',')
+                new_parts = []
+
+                for i, part_s in enumerate(parts_str_list):
+                    part_s = part_s.strip()
+                    is_alpha_channel = is_rgba and i == 3
+
+                    if part_s.endswith('%'):
+                        num_str = part_s[:-1]
+                        try:
+                            num = float(num_str)
+                            rounded_val_str = str(round(num, precision))
+                            new_parts.append(rounded_val_str + '%')
+                        except ValueError:
+                            new_parts.append(part_s) # Unchanged if not a valid number
+                    else: # Direct number
+                        try:
+                            num = float(part_s)
+                            current_val_precision = 0 if not is_alpha_channel else precision
+                            rounded_num = round(num, current_val_precision)
+                            
+                            # For alpha, if it rounds to 0 but wasn't 0, try more precision
+                            if is_alpha_channel and rounded_num == 0 and num != 0:
+                                check_precision = precision + 1
+                                while round(num, check_precision) == 0 and check_precision < 10:
+                                    check_precision += 1
+                                rounded_num = round(num, check_precision)
+
+                            if not is_alpha_channel and current_val_precision == 0:
+                                new_parts.append(str(int(rounded_num)))
+                            else:
+                                new_parts.append(str(rounded_num))
+                        except ValueError:
+                            new_parts.append(part_s) # Unchanged
+                
+                return prefix + ", ".join(new_parts) + ")"
+            except Exception: 
+                return value_str # Fallback in case of unexpected format or error
+
+        return value_str # Default: return original value
     
     def _escape_js_string(self, value: str) -> str:
         # Helper to escape strings for JS literals
@@ -141,8 +229,16 @@ class HTMLParsedVMobject:
         svg_filename = self.filename_base + str(self.current_index) + ".svg"
         self.vmobject.to_svg(svg_filename)
         
-        _, attributes = svg2paths(svg_filename)
-        current_frame_data["attributes"] = attributes
+        _, attributes_from_svg = svg2paths(svg_filename)
+        processed_attributes_list = []
+        for attr_dict in attributes_from_svg:
+            rounded_attr_dict = {}
+            for k, v in attr_dict.items():
+                # Ensure value is a string before passing to _round_attribute_value, as svg2paths might return non-strings for some attributes
+                v_str = str(v) if not isinstance(v, str) else v
+                rounded_attr_dict[k] = self._round_attribute_value(k, v_str)
+            processed_attributes_list.append(rounded_attr_dict)
+        current_frame_data["attributes"] = processed_attributes_list
         
         bg_color_rgba = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
         bg_color_rgba[-1] = bg_color_rgba[-1] / 255
@@ -185,7 +281,7 @@ class HTMLParsedVMobject:
                 self.scene.camera.pixel_height,
                 bg_color,
                 self.final_html_body,
-                self.js_filename
+                os.path.basename(self.js_filename)
             )
         else:
             self.html = BASIC_HTML_STRUCTURE % (
@@ -320,6 +416,9 @@ class HTMLParsedVMobject:
             self.js_updates,
             1000 * self.last_t
         )
+        
+        os.makedirs('media/svg_animations', exist_ok=True)
+        
         if hasattr(self, "interactive_js"):
             js_content += f"\n{self.interactive_js}"
         with open(self.js_filename, "w") as f:
