@@ -452,172 +452,129 @@ class HTMLParsedVMobject:
             else:
                 self.last_t = self.scene.renderer.time
 
-        self.js_updates = ""
         svg_container_var_name = self.filename_base.lower()
 
-        # Determine the overall maximum number of elements needed
-        overall_max_elements = 0
+        max_paths_needed = 0
+        max_circles_needed = 0
         if self.frames_data:
             for frame_data_check in self.frames_data:
-                overall_max_elements = max(overall_max_elements, len(frame_data_check["attributes"]))
-        
-        global_el_vars_js = ""
-        for i in range(overall_max_elements):
-            global_el_vars_js += f"    var el{i};\n"
+                current_frame_paths = 0
+                current_frame_circles = 0
+                for attr_dict in frame_data_check["attributes"]:
+                    if attr_dict.get('_shape_type') == 'circle':
+                        current_frame_circles += 1
+                    else:
+                        current_frame_paths += 1
+                max_paths_needed = max(max_paths_needed, current_frame_paths)
+                max_circles_needed = max(max_circles_needed, current_frame_circles)
 
-        previous_attributes_map = {} # Stores {index: attribute_dict} for the previous frame
-        previous_element_tags_map = {} # Stores {index: 'path' | 'circle'} for the actual DOM element el{i}
+        global_el_vars_js = "    // Path elements\n"
+        for i in range(max_paths_needed):
+            global_el_vars_js += f"    var p_el{i};\n"
+        global_el_vars_js += "    // Circle elements\n"
+        for i in range(max_circles_needed):
+            global_el_vars_js += f"    var c_el{i};\n"
+
+        self.js_updates = ""
+        previous_path_attributes_list = []
+        previous_circle_attributes_list = []
         
-        max_elements_ever_active_in_dom = 0 
-        max_elements_initialized_in_js = 0
-        previously_hidden_indices = set()
+        # Track visibility state to optimize .style.display changes
+        path_element_is_hidden = [False] * max_paths_needed
+        circle_element_is_hidden = [False] * max_circles_needed
+        
         previous_background_color_str = None
         previous_viewBox_str_array = None
 
         for frame_index, frame_data in enumerate(self.frames_data):
-            current_attributes_list = frame_data["attributes"]
+            current_attributes_list_from_frame = frame_data["attributes"]
             time = frame_data["time"]
             viewBox_str_array = frame_data["viewBox_str_array"]
             background_color_str = frame_data["background_color_str"]
 
             frame_js_changes = ""
-            current_frame_newly_hidden_indices = set()
-            current_frame_active_dom_element_tags = {} # Tracks final tag of el{i} for this frame
 
-            # Initialize and append new elements if they extend beyond current JS initializations
-            if len(current_attributes_list) > max_elements_initialized_in_js:
-                for i in range(max_elements_initialized_in_js, len(current_attributes_list)):
-                    el_var_name = f"el{i}"
-                    # Determine initial shape type for the new element
-                    shape_type = current_attributes_list[i].get('_shape_type', 'path') # Default to 'path'
-                    tag_name = 'circle' if shape_type == 'circle' else 'path'
-                    
-                    frame_js_changes += f"        {el_var_name} = document.createElementNS('http://www.w3.org/2000/svg', '{tag_name}');\n"
-                    frame_js_changes += f"        {svg_container_var_name}.appendChild({el_var_name});\n"
-                    # Record the tag of the newly created DOM element for future frame comparisons
-                    previous_element_tags_map[i] = tag_name 
-                max_elements_initialized_in_js = len(current_attributes_list)
-            
-            # Update max_elements_ever_active_in_dom
-            current_len = len(current_attributes_list)
-            # Consider previous map size for max_elements_ever_active_in_dom calculation
-            # This ensures that elements that were active and then disappeared are still processed for hiding.
-            # max_elements_ever_active_in_dom should be the max of itself, current_len, and keys in previous_attributes_map
-            max_len_prev_attrs = 0
-            if previous_attributes_map: # Check if map is not empty
-                max_len_prev_attrs = max(previous_attributes_map.keys()) + 1 if previous_attributes_map else 0
+            current_frame_path_attrs_dicts = []
+            current_frame_circle_attrs_dicts = []
+            for attr_dict in current_attributes_list_from_frame:
+                processed_attr_dict = {k: v for k, v in attr_dict.items() if k != '_shape_type'}
+                if attr_dict.get('_shape_type') == 'circle':
+                    current_frame_circle_attrs_dicts.append(processed_attr_dict)
+                else:
+                    current_frame_path_attrs_dicts.append(processed_attr_dict)
 
-            max_elements_ever_active_in_dom = max(max_elements_ever_active_in_dom, current_len, max_len_prev_attrs)
+            if frame_index == 0:
+                frame_js_changes += f"        {svg_container_var_name}.replaceChildren();\n"
+                for i in range(max_paths_needed):
+                    frame_js_changes += f"        p_el{i} = document.createElementNS('http://www.w3.org/2000/svg', 'path');\n"
+                    frame_js_changes += f"        {svg_container_var_name}.appendChild(p_el{i});\n"
+                for i in range(max_circles_needed):
+                    frame_js_changes += f"        c_el{i} = document.createElementNS('http://www.w3.org/2000/svg', 'circle');\n"
+                    frame_js_changes += f"        {svg_container_var_name}.appendChild(c_el{i});\n"
+                if max_paths_needed > 0 or max_circles_needed > 0:
+                    frame_js_changes += "        // End of initial element creation\n"
 
-
-            # Attribute diffing, updates, and DOM element type changes
-            for i in range(max_elements_ever_active_in_dom):
-                el_var_name = f"el{i}"
-                current_attr_dict_for_frame = current_attributes_list[i] if i < len(current_attributes_list) else None
-                # Previous attributes for this specific element index 'i'
-                prev_attr_dict_for_element = previous_attributes_map.get(i, {})
-
-                if current_attr_dict_for_frame: # Element el{i} is active in this frame
-                    current_shape_type = current_attr_dict_for_frame.get('_shape_type', 'path')
-                    current_tag_name_for_element = 'circle' if current_shape_type == 'circle' else 'path'
-                    current_frame_active_dom_element_tags[i] = current_tag_name_for_element # Record its target tag for this frame
-
-                    # Actual tag of the DOM element el{i} from the previous frame's state
-                    actual_dom_tag_from_prev_frame = previous_element_tags_map.get(i)
-
-                    element_was_recreated_this_frame = False
-                    if actual_dom_tag_from_prev_frame and current_tag_name_for_element != actual_dom_tag_from_prev_frame:
-                        # DOM Element type needs to change (e.g., path to circle)
-                        frame_js_changes += f"       // Type change for {el_var_name} from {actual_dom_tag_from_prev_frame} to {current_tag_name_for_element}\n"
-                        temp_new_el_js_var = f"new_el_{i}_{frame_index}" # Unique temporary JS variable name
-                        frame_js_changes += f"       var {temp_new_el_js_var} = document.createElementNS('http://www.w3.org/2000/svg', '{current_tag_name_for_element}');\n"
-                        
-                        # Replace the old DOM element with the new one
-                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.parentNode) {{\n"
-                        frame_js_changes += f"           {el_var_name}.parentNode.replaceChild({temp_new_el_js_var}, {el_var_name});\n"
-                        frame_js_changes += f"           {el_var_name} = {temp_new_el_js_var}; // Update JS variable to point to the new DOM element\n"
-                        frame_js_changes += f"       }} else {{\n"
-                         # Fallback: If el_var_name wasn't in DOM or was undefined, append the new one.
-                         # This might happen if an element appears at an index that was previously inactive for a long time.
-                        frame_js_changes += f"           {svg_container_var_name}.appendChild({temp_new_el_js_var});\n"
-                        frame_js_changes += f"           {el_var_name} = {temp_new_el_js_var};\n"
-                        frame_js_changes += f"       }}\n"
-                        
-                        prev_attr_dict_for_element = {} # Treat as a new element for attribute setting purposes
-                        element_was_recreated_this_frame = True
-                    
-                    # Prepare attribute dictionaries for comparison (excluding internal _shape_type)
-                    attrs_to_set_on_dom = {k: v for k, v in current_attr_dict_for_frame.items() if k != '_shape_type'}
-                    prev_attrs_on_dom = {k: v for k, v in prev_attr_dict_for_element.items() if k != '_shape_type'}
-
-                    # Set/update attributes on the DOM element el{i}
-                    for k, v_current_val_str in attrs_to_set_on_dom.items():
-                        v_prev_val_str = prev_attrs_on_dom.get(k)
-                        # Ensure comparison is string-to-string if values are already strings
-                        if str(v_current_val_str) != str(v_prev_val_str):
-                            escaped_v_current = self._escape_js_string(str(v_current_val_str))
-                            frame_js_changes += f"       {el_var_name}.setAttribute('{k}', '{escaped_v_current}');\n"
-                    
-                    # Remove attributes that were present previously but not in the current set
-                    for k_prev in prev_attrs_on_dom:
-                        if k_prev not in attrs_to_set_on_dom:
+            for i in range(max_paths_needed):
+                el_var_name = f"p_el{i}"
+                if i < len(current_frame_path_attrs_dicts):
+                    current_attrs_for_el = current_frame_path_attrs_dicts[i]
+                    prev_attrs_for_el = previous_path_attributes_list[i] if i < len(previous_path_attributes_list) else {}
+                    for k, v_curr_str in current_attrs_for_el.items():
+                        v_prev_str = prev_attrs_for_el.get(k)
+                        if str(v_curr_str) != str(v_prev_str):
+                            escaped_v_curr = self._escape_js_string(str(v_curr_str))
+                            frame_js_changes += f"       {el_var_name}.setAttribute('{k}', '{escaped_v_curr}');\n"
+                    for k_prev in prev_attrs_for_el:
+                        if k_prev not in current_attrs_for_el:
                             frame_js_changes += f"       {el_var_name}.removeAttribute('{k_prev}');\n"
-                    
-                    # Handle display style (if element was hidden and is now active)
-                    if i in previously_hidden_indices:
-                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.style) {el_var_name}.style.display = '';\n"
-                
-                else: # Element el{i} is inactive in this frame (i >= len(current_attributes_list))
-                    # Hide the element if it was initialized and not already marked as hidden in this frame's logic
-                    if i < max_elements_initialized_in_js and i not in previously_hidden_indices :
-                        # Check if el_var_name is defined and has a style property before trying to set display none
-                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.style) {el_var_name}.style.display = 'none';\n"
-                        current_frame_newly_hidden_indices.add(i)
-                    elif i < max_elements_initialized_in_js and i in previously_hidden_indices:
-                        # If it was already hidden and remains unreferenced, keep it in the hidden set
-                        current_frame_newly_hidden_indices.add(i)
+                    if path_element_is_hidden[i]:
+                        frame_js_changes += f"       {el_var_name}.style.display = '';\n"
+                        path_element_is_hidden[i] = False
+                else:
+                    if not path_element_is_hidden[i]:
+                        frame_js_changes += f"       {el_var_name}.style.display = 'none';\n"
+                        path_element_is_hidden[i] = True
+
+            for i in range(max_circles_needed):
+                el_var_name = f"c_el{i}"
+                if i < len(current_frame_circle_attrs_dicts):
+                    current_attrs_for_el = current_frame_circle_attrs_dicts[i]
+                    prev_attrs_for_el = previous_circle_attributes_list[i] if i < len(previous_circle_attributes_list) else {}
+                    for k, v_curr_str in current_attrs_for_el.items():
+                        v_prev_str = prev_attrs_for_el.get(k)
+                        if str(v_curr_str) != str(v_prev_str):
+                            escaped_v_curr = self._escape_js_string(str(v_curr_str))
+                            frame_js_changes += f"       {el_var_name}.setAttribute('{k}', '{escaped_v_curr}');\n"
+                    for k_prev in prev_attrs_for_el:
+                        if k_prev not in current_attrs_for_el:
+                            frame_js_changes += f"       {el_var_name}.removeAttribute('{k_prev}');\n"
+                    if circle_element_is_hidden[i]:
+                        frame_js_changes += f"       {el_var_name}.style.display = '';\n"
+                        circle_element_is_hidden[i] = False
+                else:
+                    if not circle_element_is_hidden[i]:
+                        frame_js_changes += f"       {el_var_name}.style.display = 'none';\n"
+                        circle_element_is_hidden[i] = True
             
-            # Update background color only if it changed
             if background_color_str != previous_background_color_str:
                 frame_js_changes += f"     {svg_container_var_name}.style.backgroundColor = '{background_color_str}';\n"
                 previous_background_color_str = background_color_str
 
-            # Update viewBox only if it changed
             if viewBox_str_array != previous_viewBox_str_array:
-                if viewBox_str_array is not None: # Ensure it's not None before joining, if it became null
+                if viewBox_str_array is not None:
                     viewBox_value = ' '.join(viewBox_str_array)
                     frame_js_changes += f"     {svg_container_var_name}.setAttribute('viewBox', '{viewBox_value}');\n"
-                else: 
-                    # If current is None but previous wasn't, we might need to remove or reset it if applicable.
-                    # For now, we assume setAttribute handles null by not changing or removing.
-                    # If specific removal behavior is needed, it can be added here.
-                    pass 
                 previous_viewBox_str_array = viewBox_str_array
 
-            # Add replaceChildren() for the very first frame to clear previous looped content
-            if frame_index == 0:
-                frame_js_changes = f"        {svg_container_var_name}.replaceChildren();\n" + frame_js_changes
-
-            # Only add a timeout if there are actual changes for this frame
             if frame_js_changes.strip():
                 self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED % (
-                    frame_js_changes.rstrip('\n'), # Use rstrip to remove trailing newlines from frame_js_changes
+                    frame_js_changes.rstrip('\n'),
                     1000 * time
                 )
                 self.js_updates += "\n"
             
-            # Update previous_attributes_map for the next frame iteration:
-            # It should store the attributes of all elements that were active in *this* frame.
-            new_previous_attributes_map_for_next_frame = {}
-            for idx, attrs_dict in enumerate(current_attributes_list):
-                new_previous_attributes_map_for_next_frame[idx] = dict(attrs_dict) # Deep copy
-            previous_attributes_map = new_previous_attributes_map_for_next_frame
-
-            # Update previous_element_tags_map for the next frame iteration:
-            # This map should reflect the actual DOM tag of el{i} after this frame's updates.
-            previous_element_tags_map = current_frame_active_dom_element_tags # Tags of elements active in this frame
-
-            previously_hidden_indices = current_frame_newly_hidden_indices
+            previous_path_attributes_list = [dict(attrs) for attrs in current_frame_path_attrs_dicts]
+            previous_circle_attributes_list = [dict(attrs) for attrs in current_frame_circle_attrs_dicts]
 
         self.js_updates = self.js_updates.removesuffix("\n")
         
