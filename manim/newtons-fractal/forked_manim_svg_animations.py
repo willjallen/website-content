@@ -1,308 +1,371 @@
 from manim import *
 from manim_mobject_svg import *
 from svgpathtools import svg2paths, parse_path
-import itertools
 import os
 import re
 import math
 import numpy as np
 
 
-HTML_STRUCTURE = """<!DOCTYPE html>
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>%s</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
 </head>
-<body style="background-color: black;">
-    <svg id="%s" width="%s" viewBox="0 0 %d %d" style="background-color:%s;"></svg>
-    %s
-    <script src="%s"></script>
+<body style="background-color:black;">
+    <svg id="{svg_id}" width="{width}" viewBox="0 0 {w_px} {h_px}" style="background-color:{bg};"></svg>
+    {extra_body}
+    <script src="{js_file}"></script>
 </body>
 </html>"""
 
-
-BASIC_HTML_STRUCTURE = """<div>
-    <svg id="%s" width="%s" viewBox="0 0 %d %d" style="background-color:%s;"></svg>
+SIMPLE_HTML_TEMPLATE = """<div>
+    <svg id="{svg_id}" width="{width}" viewBox="0 0 {w_px} {h_px}" style="background-color:{bg};"></svg>
 </div>"""
 
+JS_WRAPPER = """let rendered = false;
+let playing  = false;
+const {svg_var} = document.getElementById("{svg_id}");
+{element_declarations}
+{frames_array}
 
-JAVASCRIPT_STRUCTURE = """var rendered = false;
-var playing = false;
-var %s = document.getElementById("%s");
-%s
-%s
-function render%s() {
-    if (playing) return;
-    playing = true;
+// Kick-off entry point (called from HTML or user code)
+function render{scene_name}() {{
+    if (playing) return;          // prevent overlapping playbacks
+    playing  = true;
     rendered = false;
-    let f = 0;
-    function step() {
-        if (f < frames.length) {
-            frames[f]();
-            f++;
+    let i = 0;
+    function step() {{
+        if (i < frames.length) {{
+            frames[i++]();        // run one frame’s updater
             requestAnimationFrame(step);
-        } else {
-            playing = false;
+        }} else {{
+            playing  = false;
             rendered = true;
-        }
-    }
+        }}
+    }}
     requestAnimationFrame(step);
-}"""
-
+}}
+"""
 
 class HTMLParsedVMobject:
-    def __init__(self, vmobject: VMobject, scene: Scene, width: float = "500px", basic_html=False):
-        self.vmobject = vmobject
-        self.scene = scene
-        self.filename_base = scene.__class__.__name__
-        self.html_filename = os.path.join('media', 'svg_animations', self.filename_base + '.html')
-        self.js_filename = os.path.join('media', 'svg_animations', self.filename_base + '.js')
-        self.current_index = 0
-        self.final_html_body = ""
-        self.width = width
-        self.basic_html = basic_html
-        self.update_html()
-        self.frames_data = []
-        self.continue_updating = True
-        self.original_frame_width = self.scene.camera.frame_width
-        self.original_frame_height = self.scene.camera.frame_height
-        self.scene.add_updater(self.updater)
+    """
+    Collects per-frame SVG snapshots from a Manim VMobject, diffs attributes,
+    and emits:
+    – an HTML file that embeds the SVG container
+    – a JavaScript file containing one updater function per frame
 
-    def _detect_circle_from_path(self, d: str, tol: float = 1e-2):
-        if not d:
-            return None
+    The JS side reuses a fixed pool of <path> and <circle> elements,
+    setting only attributes that actually change between frames.
+    """
+
+    def __init__(self, vmobject: VMobject, scene: Scene,
+                 width: str = "500px", basic_html: bool = False):
+        self.vmobject       = vmobject
+        self.scene          = scene
+        self.width          = width
+        self.basic_html     = basic_html
+
+        self.basename       = scene.__class__.__name__
+        self.html_path      = os.path.join("media", "svg_animations", self.basename + ".html")
+        self.js_path        = os.path.join("media", "svg_animations", self.basename + ".js")
+
+        self.frame_index    = 0
+        self.frames_data: list[dict] = []           # collected frame metadata
+        self.collecting     = True
+
+        self.orig_w         = scene.camera.frame_width
+        self.orig_h         = scene.camera.frame_height
+
+        self._write_html_shell()                    # pre-compute HTML template
+        scene.add_updater(self._frame_updater)
+
+    # --------------------------------------------------------------------- #
+    #                Helpers: geometry rounding / SVG parsing               #
+    # --------------------------------------------------------------------- #
+    def _detect_circle(self, path_d: str, tol: float = 1e-2):
+        """
+        Try to fit an SVG path to a circle; return (cx, cy, r) on success.
+        Use simple algebraic least-squares fit, bail out if error exceeds tol.
+        """
         try:
-            path = parse_path(d)
+            path = parse_path(path_d)
         except Exception:
             return None
-        if len(path) == 0 or not path.iscontinuous() or not path.isclosed():
+        if len(path) == 0 or not (path.iscontinuous() and path.isclosed()):
             return None
-        sampled = set()
-        for seg in path:
-            if hasattr(seg, 'start') and hasattr(seg, 'point') and hasattr(seg, 'end'):
-                sampled.update([seg.start, seg.point(0.5), seg.end])
-            else:
-                return None
-        if len(sampled) < 3:
+
+        samples = {seg.start for seg in path} | {seg.end for seg in path} | {seg.point(0.5) for seg in path}
+        if len(samples) < 3:
             return None
-        pts = np.array([(p.real, p.imag) for p in sampled])
-        x, y = pts[:, 0], pts[:, 1]
-        M = np.vstack([x, y, np.ones(len(pts))]).T
-        P = -(x ** 2 + y ** 2)
+
+        pts = np.array([(p.real, p.imag) for p in samples])
+        X, Y = pts[:, 0], pts[:, 1]
+        M = np.vstack([X, Y, np.ones(len(pts))]).T
+        b = -(X**2 + Y**2)
         try:
-            (A, B, C), *_ = np.linalg.lstsq(M, P, rcond=None)
+            (A, B, C), *_ = np.linalg.lstsq(M, b, rcond=None)
         except np.linalg.LinAlgError:
             return None
+
         cx, cy = -A / 2, -B / 2
-        r2 = (A ** 2 + B ** 2) / 4 - C
-        if r2 <= max(tol * tol * 0.01, 1e-9):
+        r2     = (A**2 + B**2) / 4 - C
+        if r2 <= max(tol**2 * 0.01, 1e-9):
             return None
         r = math.sqrt(r2)
-        if r < tol / 2:
-            return None
-        for p in sampled:
-            if abs(math.hypot(p.real - cx, p.imag - cy) - r) > tol:
-                return None
-        try:
-            length_err_tol = max(tol * 0.1, 1e-7)
-            if abs(path.length(error=length_err_tol) - 2 * math.pi * r) > max(tol * 10, 0.15 * r):
-                return None
-        except Exception:
+
+        if any(abs(math.hypot(p.real - cx, p.imag - cy) - r) > tol for p in samples):
             return None
         return cx, cy, r
 
-    def _round_attribute_value(self, key: str, value_str: str, precision: int = 2) -> str:
-        if not isinstance(value_str, str):
-            return value_str
-        if key == 'd':
+    @staticmethod
+    def _round_value(attr: str, value: str, precision: int = 2) -> str:
+        """Round numeric SVG attribute strings for stability and compression."""
+        if attr == "d":                                # path data → round every number
             def repl(m):
                 try:
                     return str(round(float(m.group()), precision))
                 except ValueError:
                     return m.group()
-            return re.sub(r"[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?", repl, value_str)
-        if key in {'fill-opacity', 'stroke-opacity', 'stroke-width', 'opacity', 'stroke-miterlimit', 'cx', 'cy', 'r'}:
+            return re.sub(r"[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?", repl, value)
+        if attr in {"cx", "cy", "r", "stroke-width", "opacity",
+                    "fill-opacity", "stroke-opacity", "stroke-miterlimit"}:
             try:
-                num = float(value_str)
-                if 0 < abs(num) < 1:
-                    s = str(num)
-                    dec = s.split('.', 1)[1] if '.' in s else ''
-                    leading = len(dec) - len(dec.lstrip('0'))
-                    return str(round(num, leading + 2))
+                num = float(value)
                 return str(round(num, precision))
             except ValueError:
-                return value_str
-        if value_str.startswith(('rgb(', 'rgba(')):
-            pre = 'rgba(' if value_str.startswith('rgba(') else 'rgb('
-            content = value_str[len(pre):-1]
-            parts = [p.strip() for p in content.split(',')]
-            out = []
-            for i, p in enumerate(parts):
-                if p.endswith('%'):
-                    try:
-                        out.append(f"{round(float(p[:-1]), precision)}%")
-                    except ValueError:
-                        out.append(p)
+                return value
+        if value.startswith(("rgb(", "rgba(")):
+            head = "rgba(" if value.startswith("rgba") else "rgb("
+            nums = [n.strip() for n in value[len(head):-1].split(",")]
+            out  = []
+            for i, n in enumerate(nums):
+                if n.endswith("%"):
+                    out.append(f"{round(float(n[:-1]), precision)}%")
                 else:
-                    try:
-                        num = float(p)
-                        if pre == 'rgba(' and i == 3:
-                            out.append(str(round(num, precision)))
-                        else:
-                            out.append(str(int(round(num))))
-                    except ValueError:
-                        out.append(p)
-            return pre + ', '.join(out) + ')'
-        return value_str
+                    out.append(str(round(float(n), precision if head == "rgba(" and i == 3 else 0)))
+            return head + ", ".join(out) + ")"
+        return value
 
-    def _escape_js_string(self, value: str) -> str:
-        return value.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-
-    def updater(self, dt):
-        if not self.continue_updating:
+    # --------------------------------------------------------------------- #
+    #                       Per-frame data collection                       #
+    # --------------------------------------------------------------------- #
+    def _frame_updater(self, dt: float):
+        """Called each render tick by Manim – serialize current VMobject to SVG."""
+        if not self.collecting:
             return
-        svg_name = f"{self.filename_base}{self.current_index}.svg"
-        self.vmobject.to_svg(svg_name)
-        _, attr_list = svg2paths(svg_name)
-        frame_attrs = []
-        for attrs in attr_list:
-            new = {}
-            if 'd' in attrs:
-                dval = str(attrs['d'])
-                circ = self._detect_circle_from_path(dval)
-                if circ:
-                    cx, cy, r = circ
-                    new['_shape_type'] = 'circle'
-                    new['cx'] = self._round_attribute_value('cx', str(cx))
-                    new['cy'] = self._round_attribute_value('cy', str(cy))
-                    new['r'] = self._round_attribute_value('r', str(r))
+
+        tmp_svg = f"{self.basename}_{self.frame_index}.svg"
+        self.vmobject.to_svg(tmp_svg)                 # create snapshot file
+        _, attrs_list = svg2paths(tmp_svg)
+        os.remove(tmp_svg)
+
+        # Build list of element attribute dictionaries for this frame
+        elem_attrs: list[dict] = []
+        for raw_attr in attrs_list:
+            entry = {}
+            if "d" in raw_attr:
+                path_def = str(raw_attr["d"])
+                circle = self._detect_circle(path_def)
+                if circle:
+                    cx, cy, r = circle
+                    entry["_shape"] = "circle"
+                    entry["cx"] = self._round_value("cx", str(cx))
+                    entry["cy"] = self._round_value("cy", str(cy))
+                    entry["r"]  = self._round_value("r",  str(r))
                 else:
-                    new['_shape_type'] = 'path'
-                    new['d'] = self._round_attribute_value('d', dval)
-            for k, v in attrs.items():
-                if k == 'd':
+                    entry["_shape"] = "path"
+                    entry["d"] = self._round_value("d", path_def)
+            for k, v in raw_attr.items():
+                if k == "d":
                     continue
-                new[k] = self._round_attribute_value(k, str(v))
-            if '_shape_type' not in new:
-                new['_shape_type'] = 'path'
-            frame_attrs.append(new)
-        bg = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
-        bg[-1] /= 255
-        bg_str = f"rgb({', '.join(map(str, bg))})"
-        vb_arr = None
+                entry[k] = self._round_value(k, str(v))
+            if "_shape" not in entry:
+                entry["_shape"] = "path"
+            elem_attrs.append(entry)
+
+        # scene-wide metadata
+        bg_rgba = color_to_int_rgba(self.scene.camera.background_color,
+                                    self.scene.camera.background_opacity)
+        bg_rgba[-1] /= 255
+        bg_str  = f"rgb({', '.join(map(str, bg_rgba))})"
+
+        viewbox = None
         if isinstance(self.scene, MovingCameraScene):
-            frame = self.scene.camera.frame
-            pw = self.scene.camera.pixel_width * self.scene.camera.frame_width / self.original_frame_width
-            ph = self.scene.camera.pixel_height * self.scene.camera.frame_height / self.original_frame_height
-            pc = frame.get_corner(UL) * self.scene.camera.pixel_width / self.original_frame_width
-            pc += self.scene.camera.pixel_width / 2 * RIGHT + self.scene.camera.pixel_height / 2 * DOWN
-            pc[1] = -pc[1]
-            vb_arr = list(map(str, [*pc[:2], pw, ph]))
-        self.frames_data.append({'attributes': frame_attrs, 'background_color_str': bg_str,
-                                 'viewBox_str_array': vb_arr})
-        self.current_index += 1
-        os.remove(svg_name)
+            cam   = self.scene.camera
+            pw    = cam.pixel_width  * cam.frame_width  / self.orig_w
+            ph    = cam.pixel_height * cam.frame_height / self.orig_h
+            top_l = cam.frame.get_corner(UL) * cam.pixel_width / self.orig_w
+            center = top_l + cam.pixel_width / 2 * RIGHT + cam.pixel_height / 2 * DOWN
+            center[1] = -center[1]
+            viewbox = list(map(str, [*center[:2], pw, ph]))
 
-    def update_html(self):
-        bg = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
-        bg[-1] /= 255
-        bg_str = f"rgb({', '.join(map(str, bg))})"
-        if not self.basic_html:
-            self.html = HTML_STRUCTURE % (self.filename_base, self.filename_base, self.width,
-                                          self.scene.camera.pixel_width, self.scene.camera.pixel_height,
-                                          bg_str, self.final_html_body, os.path.basename(self.js_filename))
-        else:
-            self.html = BASIC_HTML_STRUCTURE % (self.filename_base, self.width,
-                                                self.scene.camera.pixel_width, self.scene.camera.pixel_height, bg_str)
+        self.frames_data.append({
+            "elements": elem_attrs,
+            "bg": bg_str,
+            "viewbox": viewbox
+        })
+        self.frame_index += 1
 
+    # --------------------------------------------------------------------- #
+    #                             HTML scaffold                             #
+    # --------------------------------------------------------------------- #
+    def _write_html_shell(self):
+        cam = self.scene.camera
+        bg_rgba = color_to_int_rgba(cam.background_color, cam.background_opacity)
+        bg_rgba[-1] /= 255
+        bg_str = f"rgb({', '.join(map(str, bg_rgba))})"
+        html_body = SIMPLE_HTML_TEMPLATE if self.basic_html else HTML_TEMPLATE
+        self.html_markup = html_body.format(
+            title=self.basename,
+            svg_id=self.basename,
+            width=self.width,
+            w_px=cam.pixel_width,
+            h_px=cam.pixel_height,
+            bg=bg_str,
+            extra_body="",
+            js_file=os.path.basename(self.js_path)
+        )
+
+    # --------------------------------------------------------------------- #
+    #                          Compilation to files                         #
+    # --------------------------------------------------------------------- #
     def finish(self):
-        self.scene.remove_updater(self.updater)
-        svg_var = self.filename_base.lower()
-        max_paths = max(sum(1 for a in f['attributes'] if a['_shape_type'] == 'path') for f in self.frames_data) if self.frames_data else 0
-        max_circles = max(sum(1 for a in f['attributes'] if a['_shape_type'] == 'circle') for f in self.frames_data) if self.frames_data else 0
-        vars_js = "    // Path elements\n"
-        vars_js += ''.join(f"    var p_el{i};\n" for i in range(max_paths))
-        vars_js += "    // Circle elements\n"
-        vars_js += ''.join(f"    var c_el{i};\n" for i in range(max_circles))
-        frames_list = []
-        prev_path_attrs = []
-        prev_circle_attrs = []
-        path_hidden = [False] * max_paths
-        circle_hidden = [False] * max_circles
-        prev_bg = None
-        prev_vb = None
+        """Stop collecting, diff frames, write *.js and *.html output files."""
+        self.scene.remove_updater(self._frame_updater)
+        self.collecting = False
+
+        svg_var = self.basename.lower()
+
+        # Pre-scan frames to allocate fixed pools of <path>/<circle> elements
+        max_paths   = max((sum(e["_shape"] == "path"   for e in f["elements"])
+                           for f in self.frames_data), default=0)
+        max_circles = max((sum(e["_shape"] == "circle" for e in f["elements"])
+                           for f in self.frames_data), default=0)
+
+        # Declare JS handles for every pooled element
+        decls  = ["// path pool"]
+        decls += [f"let p_{i};" for i in range(max_paths)]
+        decls += ["// circle pool"]
+        decls += [f"let c_{i};" for i in range(max_circles)]
+        element_decls_js = "\n".join("    " + d for d in decls)
+
+        # Walk through frames, emit diff-only JS snippets
+        frame_bodies: list[str] = []
+        prev_path_attrs:   list[dict] = []
+        prev_circle_attrs: list[dict] = []
+        hidden_paths   = [False] * max_paths
+        hidden_circles = [False] * max_circles
+        prev_bg        = None
+        prev_viewbox   = None
+
         for idx, frame in enumerate(self.frames_data):
-            path_attrs = [d for d in frame['attributes'] if d['_shape_type'] == 'path']
-            circ_attrs = [d for d in frame['attributes'] if d['_shape_type'] == 'circle']
-            js = ""
+            body_lines: list[str] = []
+
+            # First frame: build the element pool once
             if idx == 0:
-                js += f"        {svg_var}.replaceChildren();\n"
+                body_lines.append(f"{svg_var}.replaceChildren();")
                 for i in range(max_paths):
-                    js += f"        p_el{i}=document.createElementNS('http://www.w3.org/2000/svg','path');\n"
-                    js += f"        {svg_var}.appendChild(p_el{i});\n"
+                    body_lines += [
+                        f"p_{i}=document.createElementNS('http://www.w3.org/2000/svg','path');",
+                        f"{svg_var}.appendChild(p_{i});"
+                    ]
                 for i in range(max_circles):
-                    js += f"        c_el{i}=document.createElementNS('http://www.w3.org/2000/svg','circle');\n"
-                    js += f"        {svg_var}.appendChild(c_el{i});\n"
+                    body_lines += [
+                        f"c_{i}=document.createElementNS('http://www.w3.org/2000/svg','circle');",
+                        f"{svg_var}.appendChild(c_{i});"
+                    ]
+
+            # Split current frame’s attributes into path/circle lists
+            paths_now   = [e for e in frame["elements"] if e["_shape"] == "path"]
+            circles_now = [e for e in frame["elements"] if e["_shape"] == "circle"]
+
+            # Diff path pool
             for i in range(max_paths):
-                el = f"p_el{i}"
-                if i < len(path_attrs):
-                    cur = path_attrs[i]
+                el_js = f"p_{i}"
+                if i < len(paths_now):
+                    cur = paths_now[i]
                     prev = prev_path_attrs[i] if i < len(prev_path_attrs) else {}
+
+                    # set changed / new attributes
                     for k, v in cur.items():
-                        if k == '_shape_type':
+                        if k == "_shape":
                             continue
-                        if str(prev.get(k)) != str(v):
-                            js += f"        {el}.setAttribute('{k}','{self._escape_js_string(v)}');\n"
+                        if prev.get(k) != v:
+                            v_esc = v.replace("\\", "\\\\").replace("'", "\\'")
+                            body_lines.append(f"{el_js}.setAttribute('{k}','{v_esc}');")
+
+                    # remove stale attributes
                     for k in prev:
-                        if k not in cur and k != '_shape_type':
-                            js += f"        {el}.removeAttribute('{k}');\n"
-                    if path_hidden[i]:
-                        js += f"        {el}.style.display='';\n"
-                        path_hidden[i] = False
-                else:
-                    if not path_hidden[i]:
-                        js += f"        {el}.style.display='none';\n"
-                        path_hidden[i] = True
+                        if k not in cur and k != "_shape":
+                            body_lines.append(f"{el_js}.removeAttribute('{k}');")
+
+                    if hidden_paths[i]:
+                        body_lines.append(f"{el_js}.style.display='';")
+                        hidden_paths[i] = False
+                else:  # unused in this frame
+                    if not hidden_paths[i]:
+                        body_lines.append(f"{el_js}.style.display='none';")
+                        hidden_paths[i] = True
+
+            # Diff circle pool (same logic)
             for i in range(max_circles):
-                el = f"c_el{i}"
-                if i < len(circ_attrs):
-                    cur = circ_attrs[i]
+                el_js = f"c_{i}"
+                if i < len(circles_now):
+                    cur = circles_now[i]
                     prev = prev_circle_attrs[i] if i < len(prev_circle_attrs) else {}
                     for k, v in cur.items():
-                        if k == '_shape_type':
+                        if k == "_shape":
                             continue
-                        if str(prev.get(k)) != str(v):
-                            js += f"        {el}.setAttribute('{k}','{self._escape_js_string(v)}');\n"
+                        if prev.get(k) != v:
+                            v_esc = v.replace("\\", "\\\\").replace("'", "\\'")
+                            body_lines.append(f"{el_js}.setAttribute('{k}','{v_esc}');")
                     for k in prev:
-                        if k not in cur and k != '_shape_type':
-                            js += f"        {el}.removeAttribute('{k}');\n"
-                    if circle_hidden[i]:
-                        js += f"        {el}.style.display='';\n"
-                        circle_hidden[i] = False
+                        if k not in cur and k != "_shape":
+                            body_lines.append(f"{el_js}.removeAttribute('{k}');")
+                    if hidden_circles[i]:
+                        body_lines.append(f"{el_js}.style.display='';")
+                        hidden_circles[i] = False
                 else:
-                    if not circle_hidden[i]:
-                        js += f"        {el}.style.display='none';\n"
-                        circle_hidden[i] = True
-            if frame['background_color_str'] != prev_bg:
-                js += f"        {svg_var}.style.backgroundColor='{frame['background_color_str']}';\n"
-                prev_bg = frame['background_color_str']
-            if frame['viewBox_str_array'] != prev_vb:
-                if frame['viewBox_str_array']:
-                    vb = ' '.join(frame['viewBox_str_array'])
-                    js += f"        {svg_var}.setAttribute('viewBox','{vb}');\n"
-                prev_vb = frame['viewBox_str_array']
-            frames_list.append(js.rstrip())
-            prev_path_attrs = [dict(a) for a in path_attrs]
-            prev_circle_attrs = [dict(a) for a in circ_attrs]
-        frames_js = "var frames=[\n" + ",\n".join(f"    function(){{\n{s}\n    }}" for s in frames_list) + "\n];"
-        js_content = JAVASCRIPT_STRUCTURE % (svg_var, self.filename_base, vars_js, frames_js, self.filename_base)
-        os.makedirs('media/svg_animations', exist_ok=True)
-        if hasattr(self, "interactive_js"):
-            js_content += "\n" + self.interactive_js
-        with open(self.js_filename, "w") as f:
-            f.write(js_content)
-        with open(self.html_filename, "w") as f:
-            f.write(self.html)
+                    if not hidden_circles[i]:
+                        body_lines.append(f"{el_js}.style.display='none';")
+                        hidden_circles[i] = True
+
+            # Scene-level changes
+            if frame["bg"] != prev_bg:
+                body_lines.append(f"{svg_var}.style.backgroundColor='{frame['bg']}';")
+                prev_bg = frame["bg"]
+
+            if frame["viewbox"] != prev_viewbox:
+                if frame["viewbox"]:
+                    vb_str = " ".join(frame["viewbox"])
+                    body_lines.append(f"{svg_var}.setAttribute('viewBox','{vb_str}');")
+                prev_viewbox = frame["viewbox"]
+
+            # Save JS body for this frame
+            frame_bodies.append("\n        ".join(body_lines) or "// no-op")
+
+            # Snapshot current attr lists for next diff
+            prev_path_attrs   = [dict(a) for a in paths_now]
+            prev_circle_attrs = [dict(a) for a in circles_now]
+
+        # Build JS array literal: one function per frame
+        frames_array_js = "const frames = [\n" + ",\n".join(
+            f"    () => {{\n        {body}\n    }}" for body in frame_bodies
+        ) + "\n];"
+
+        # Final JS file
+        js_code = JS_WRAPPER.format(
+            svg_var=svg_var,
+            svg_id=self.basename,
+            element_declarations=element_decls_js,
+            frames_array=frames_array_js,
+            scene_name=self.basename
+        )
+        os.makedirs(os.path.dirname(self.js_path), exist_ok=True)
+        with open(self.js_path, "w") as f_js:
+            f_js.write(js_code)
+        with open(self.html_path, "w") as f_html:
+            f_html.write(self.html_markup)
