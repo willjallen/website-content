@@ -39,7 +39,7 @@ function render{scene_name}() {{
     let i = 0;
     function step() {{
         if (i < frames.length) {{
-            frames[i++]();        // run one frame’s updater
+            frames[i++]();        // run one frame's updater
             requestAnimationFrame(step);
         }} else {{
             playing  = false;
@@ -54,8 +54,8 @@ class HTMLParsedVMobject:
     """
     Collects per-frame SVG snapshots from a Manim VMobject, diffs attributes,
     and emits:
-    – an HTML file that embeds the SVG container
-    – a JavaScript file containing one updater function per frame
+    - an HTML file that embeds the SVG container
+    - a JavaScript file containing one updater function per frame
 
     The JS side reuses a fixed pool of <path> and <circle> elements,
     setting only attributes that actually change between frames.
@@ -153,7 +153,7 @@ class HTMLParsedVMobject:
     #                       Per-frame data collection                       #
     # --------------------------------------------------------------------- #
     def _frame_updater(self, dt: float):
-        """Called each render tick by Manim – serialize current VMobject to SVG."""
+        """Called each render tick by Manim - serialize current VMobject to SVG."""
         if not self.collecting:
             return
 
