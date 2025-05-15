@@ -1,9 +1,11 @@
 from manim import *
 from manim_mobject_svg import *
-from svgpathtools import svg2paths
+from svgpathtools import svg2paths, parse_path
 import itertools
 import os
 import re
+import math # Added for detect_circle_from_path
+import numpy as np # ADDED
 
 
 HTML_STRUCTURE = """<!DOCTYPE html>
@@ -14,7 +16,7 @@ HTML_STRUCTURE = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>%s</title>
 </head>
-<body>
+<body style="background-color: black;">
     <svg id="%s" width="%s" viewBox="0 0 %d %d" style="background-color:%s;"></svg>
     %s
     <script src="%s"></script>
@@ -58,7 +60,7 @@ JAVASCRIPT_UPDATE_STRUCTURE = """    timeouts.push(setTimeout(function() {
 
 
 JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED = """    timeouts.push(setTimeout(function() {
-		%s
+        %s
     }, %f))"""
 
 
@@ -125,8 +127,113 @@ class HTMLParsedVMobject:
         self.continue_updating = True
         self.original_frame_width = self.scene.camera.frame_width
         self.original_frame_height = self.scene.camera.frame_height
+        # For finish() method state, if needed across calls or for clarity
+        # self.previous_attributes_map = {} 
+        # self.previous_element_tags_map = {}
         self.scene.add_updater(self.updater)
     
+    def _detect_circle_from_path(self, d: str, tol: float = 1e-2):
+        """Return (cx, cy, r) if the SVG path string `d` is (approximately) a circle.
+        This method uses a least-squares fit on sample points from the path.
+        tol - absolute error in coordinate units for verifying points against the circle.
+        """
+        if not d:
+            return None
+
+        try:
+            # svgpathtools.parse_path can handle complex SVG path strings
+            path = parse_path(d)
+        except Exception:  # Broad exception for any parsing errors
+            return None
+
+        if len(path) == 0:  # Path has no segments
+            return None
+
+        # A circle should be a single, closed contour.
+        # Using a tighter tolerance for structural checks like closedness.
+        # Max with 1e-7 avoids issues if tol is extremely small.
+        closed_check_tol = max(tol * 0.01, 1e-7)
+        if not path.iscontinuous() or not path.isclosed():
+            return None
+
+        # Collect a set of unique sample points from the path (complex numbers).
+        sampled_points_complex = set()
+        for segment in path:
+            # Ensure segments are well-formed and have standard attributes
+            if hasattr(segment, 'start') and hasattr(segment, 'point') and hasattr(segment, 'end'):
+                 sampled_points_complex.add(segment.start)
+                 sampled_points_complex.add(segment.point(0.5)) # Midpoint
+                 sampled_points_complex.add(segment.end)
+            else: # Path contains non-standard segments
+                 return None
+
+
+        if len(sampled_points_complex) < 3:  # Need at least 3 unique points for a circle fit.
+            return None
+        
+        unique_points_list = list(sampled_points_complex)
+
+        # Least-squares circle fit (Kåsa method / algebraic approach).
+        # Solves for A, B, C in: x^2 + y^2 + A*x + B*y + C = 0
+        coords = np.array([(p.real, p.imag) for p in unique_points_list])
+        x_coords = coords[:, 0]
+        y_coords = coords[:, 1]
+
+        M_matrix = np.vstack([x_coords, y_coords, np.ones(len(unique_points_list))]).T
+        P_vector = -(x_coords**2 + y_coords**2)
+
+        try:
+            params, _, rank, _ = np.linalg.lstsq(M_matrix, P_vector, rcond=None)
+        except np.linalg.LinAlgError:
+            return None  # LSQ solve failed
+
+        if rank < 3: # Points are likely collinear or otherwise degenerate
+            return None
+
+        A_fit, B_fit, C_fit = params[0], params[1], params[2]
+
+        cx = -A_fit / 2.0
+        cy = -B_fit / 2.0
+        r_squared = (A_fit**2 + B_fit**2) / 4.0 - C_fit
+
+        # Radius check
+        # Using a small epsilon (e.g., 1e-9 or tol^2) to avoid issues with floating point arithmetic
+        if r_squared <= max(tol * tol * 0.01, 1e-9): 
+            return None
+        
+        r = math.sqrt(r_squared)
+
+        # Circle should not be excessively small (e.g. smaller than tolerance itself)
+        if r < tol / 2.0 : 
+            return None
+
+        # Verification 1: All unique sampled points must lie on the fitted circle within tolerance.
+        for p_complex in unique_points_list:
+            dist_from_center = math.hypot(p_complex.real - cx, p_complex.imag - cy)
+            if abs(dist_from_center - r) > tol:
+                return None
+        
+        # Verification 2: Path length consistency.
+        try:
+            path_length_error_tol = max(tol * 0.1, 1e-7)
+            path_actual_length = path.length(error=path_length_error_tol) 
+        except Exception: 
+            return None # path.length() computation failed
+
+        expected_circumference = 2 * math.pi * r
+        
+        # Tolerance for path length: allows for Bezier approximations.
+        # This might need tuning based on how paths are generated.
+        length_relative_tolerance = 0.15 # 15% relative deviation
+        length_absolute_tolerance = tol * 10 # Absolute deviation related to tol
+        
+        allowed_length_deviation = max(length_absolute_tolerance, length_relative_tolerance * r)
+
+        if abs(path_actual_length - expected_circumference) > allowed_length_deviation:
+            return None
+
+        return cx, cy, r
+
     def _round_attribute_value(self, key: str, value_str: str, precision: int = 2) -> str:
         if not isinstance(value_str, str):
             return value_str # Should generally be a string from svg2paths attributes
@@ -144,7 +251,7 @@ class HTMLParsedVMobject:
             except Exception:
                  return value_str
         
-        simple_numeric_keys = ['fill-opacity', 'stroke-opacity', 'stroke-width', 'opacity', 'stroke-miterlimit']
+        simple_numeric_keys = ['fill-opacity', 'stroke-opacity', 'stroke-width', 'opacity', 'stroke-miterlimit', 'cx', 'cy', 'r']
         if key in simple_numeric_keys:
             try:
                 val_float = float(value_str)
@@ -231,13 +338,58 @@ class HTMLParsedVMobject:
         
         _, attributes_from_svg = svg2paths(svg_filename)
         processed_attributes_list = []
-        for attr_dict in attributes_from_svg:
-            rounded_attr_dict = {}
-            for k, v in attr_dict.items():
-                # Ensure value is a string before passing to _round_attribute_value, as svg2paths might return non-strings for some attributes
+        for attr_dict_original in attributes_from_svg:
+            # Create a new dict for processed attributes for this element
+            current_element_processed_attrs = {}
+            
+            # Handle 'd' attribute first for potential circle conversion
+            d_path_value = None
+            if 'd' in attr_dict_original:
+                # Ensure d_path_value is a string for processing
+                d_path_value_raw = attr_dict_original['d']
+                d_path_value = str(d_path_value_raw) if not isinstance(d_path_value_raw, str) else d_path_value_raw
+                
+                circle_params = self._detect_circle_from_path(d_path_value)
+                if circle_params:
+                    cx, cy, r = circle_params
+                    current_element_processed_attrs['_shape_type'] = 'circle'
+                    # Round and store circle parameters
+                    current_element_processed_attrs['cx'] = self._round_attribute_value('cx', str(cx), precision=2)
+                    current_element_processed_attrs['cy'] = self._round_attribute_value('cy', str(cy), precision=2)
+                    current_element_processed_attrs['r'] = self._round_attribute_value('r', str(r), precision=2)
+                else:
+                    # It's a path, not a circle
+                    current_element_processed_attrs['_shape_type'] = 'path'
+                    current_element_processed_attrs['d'] = self._round_attribute_value('d', d_path_value) # Round the path data
+            else:
+                # Not a path element from svg2paths or 'd' is missing. Default to 'path' or handle as other type.
+                # Assuming svg2paths always gives 'd' for its elements. If not, this logic might need adjustment.
+                # For now, if no 'd', it's not a candidate for circle conversion from path.
+                # We'll assume other attributes define it, and it's not a 'path' in the sense we optimize.
+                # To be safe, let's assign a generic type or let it pass through.
+                # If it's not a path, it won't have 'd' for removal/addition logic.
+                # However, all elements from svg2paths should be paths.
+                 pass # Or assign a default _shape_type if necessary, e.g., 'unknown'
+
+            # Process and round all other attributes from the original dictionary
+            for k, v in attr_dict_original.items():
+                if k == 'd': # Already handled (or skipped if became circle)
+                    continue
+                
                 v_str = str(v) if not isinstance(v, str) else v
-                rounded_attr_dict[k] = self._round_attribute_value(k, v_str)
-            processed_attributes_list.append(rounded_attr_dict)
+                current_element_processed_attrs[k] = self._round_attribute_value(k, v_str)
+
+            # Ensure _shape_type is set if not already (e.g. if 'd' was missing but we still process other attrs)
+            if '_shape_type' not in current_element_processed_attrs and 'd' not in attr_dict_original:
+                # This case implies it's not a standard path from svg2paths that we are used to.
+                # For safety in `finish`, ensure `_shape_type` exists. Default to 'path' if unsure,
+                # or a more specific type if identifiable.
+                # Given that `svg2paths` is used, this branch is unlikely.
+                # If it's truly not a path, the diffing logic in `finish` might misinterpret it.
+                # However, the problem focuses on paths becoming circles.
+                 current_element_processed_attrs['_shape_type'] = 'path' # Fallback for safety
+
+            processed_attributes_list.append(current_element_processed_attrs)
         current_frame_data["attributes"] = processed_attributes_list
         
         bg_color_rgba = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
@@ -313,9 +465,11 @@ class HTMLParsedVMobject:
         for i in range(overall_max_elements):
             global_el_vars_js += f"    var el{i};\n"
 
-        previous_attributes_list = []
-        max_elements_ever_active_in_dom = 0 # Tracks highest index an element has occupied for display:none logic
-        max_elements_initialized_in_js = 0  # Tracks elements for which create/append has been called
+        previous_attributes_map = {} # Stores {index: attribute_dict} for the previous frame
+        previous_element_tags_map = {} # Stores {index: 'path' | 'circle'} for the actual DOM element el{i}
+        
+        max_elements_ever_active_in_dom = 0 
+        max_elements_initialized_in_js = 0
         previously_hidden_indices = set()
         previous_background_color_str = None
         previous_viewBox_str_array = None
@@ -328,53 +482,101 @@ class HTMLParsedVMobject:
 
             frame_js_changes = ""
             current_frame_newly_hidden_indices = set()
+            current_frame_active_dom_element_tags = {} # Tracks final tag of el{i} for this frame
 
-            # Initialize and append new elements if needed
+            # Initialize and append new elements if they extend beyond current JS initializations
             if len(current_attributes_list) > max_elements_initialized_in_js:
                 for i in range(max_elements_initialized_in_js, len(current_attributes_list)):
                     el_var_name = f"el{i}"
-                    frame_js_changes += f"        {el_var_name} = document.createElementNS('http://www.w3.org/2000/svg', 'path');\n"
+                    # Determine initial shape type for the new element
+                    shape_type = current_attributes_list[i].get('_shape_type', 'path') # Default to 'path'
+                    tag_name = 'circle' if shape_type == 'circle' else 'path'
+                    
+                    frame_js_changes += f"        {el_var_name} = document.createElementNS('http://www.w3.org/2000/svg', '{tag_name}');\n"
                     frame_js_changes += f"        {svg_container_var_name}.appendChild({el_var_name});\n"
+                    # Record the tag of the newly created DOM element for future frame comparisons
+                    previous_element_tags_map[i] = tag_name 
                 max_elements_initialized_in_js = len(current_attributes_list)
             
-            # Update max_elements_ever_active_in_dom for display:none logic
+            # Update max_elements_ever_active_in_dom
             current_len = len(current_attributes_list)
-            prev_len = len(previous_attributes_list)
-            if current_len > max_elements_ever_active_in_dom:
-                max_elements_ever_active_in_dom = current_len
-            if prev_len > max_elements_ever_active_in_dom: # Check previous_attributes_list as well, as elements might have been removed
-                max_elements_ever_active_in_dom = prev_len
+            # Consider previous map size for max_elements_ever_active_in_dom calculation
+            # This ensures that elements that were active and then disappeared are still processed for hiding.
+            # max_elements_ever_active_in_dom should be the max of itself, current_len, and keys in previous_attributes_map
+            max_len_prev_attrs = 0
+            if previous_attributes_map: # Check if map is not empty
+                max_len_prev_attrs = max(previous_attributes_map.keys()) + 1 if previous_attributes_map else 0
 
-            # Attribute diffing and updates
+            max_elements_ever_active_in_dom = max(max_elements_ever_active_in_dom, current_len, max_len_prev_attrs)
+
+
+            # Attribute diffing, updates, and DOM element type changes
             for i in range(max_elements_ever_active_in_dom):
                 el_var_name = f"el{i}"
-                if i < len(current_attributes_list):
-                    # Element el_i is active in this frame
-                    current_attr_dict = current_attributes_list[i]
-                    prev_attr_dict = previous_attributes_list[i] if i < len(previous_attributes_list) else {}
+                current_attr_dict_for_frame = current_attributes_list[i] if i < len(current_attributes_list) else None
+                # Previous attributes for this specific element index 'i'
+                prev_attr_dict_for_element = previous_attributes_map.get(i, {})
 
-                    for k, v_current in current_attr_dict.items():
-                        v_prev = prev_attr_dict.get(k)
-                        if v_current != v_prev:
-                            escaped_v_current = self._escape_js_string(v_current)
+                if current_attr_dict_for_frame: # Element el{i} is active in this frame
+                    current_shape_type = current_attr_dict_for_frame.get('_shape_type', 'path')
+                    current_tag_name_for_element = 'circle' if current_shape_type == 'circle' else 'path'
+                    current_frame_active_dom_element_tags[i] = current_tag_name_for_element # Record its target tag for this frame
+
+                    # Actual tag of the DOM element el{i} from the previous frame's state
+                    actual_dom_tag_from_prev_frame = previous_element_tags_map.get(i)
+
+                    element_was_recreated_this_frame = False
+                    if actual_dom_tag_from_prev_frame and current_tag_name_for_element != actual_dom_tag_from_prev_frame:
+                        # DOM Element type needs to change (e.g., path to circle)
+                        frame_js_changes += f"       // Type change for {el_var_name} from {actual_dom_tag_from_prev_frame} to {current_tag_name_for_element}\n"
+                        temp_new_el_js_var = f"new_el_{i}_{frame_index}" # Unique temporary JS variable name
+                        frame_js_changes += f"       var {temp_new_el_js_var} = document.createElementNS('http://www.w3.org/2000/svg', '{current_tag_name_for_element}');\n"
+                        
+                        # Replace the old DOM element with the new one
+                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.parentNode) {{\n"
+                        frame_js_changes += f"           {el_var_name}.parentNode.replaceChild({temp_new_el_js_var}, {el_var_name});\n"
+                        frame_js_changes += f"           {el_var_name} = {temp_new_el_js_var}; // Update JS variable to point to the new DOM element\n"
+                        frame_js_changes += f"       }} else {{\n"
+                         # Fallback: If el_var_name wasn't in DOM or was undefined, append the new one.
+                         # This might happen if an element appears at an index that was previously inactive for a long time.
+                        frame_js_changes += f"           {svg_container_var_name}.appendChild({temp_new_el_js_var});\n"
+                        frame_js_changes += f"           {el_var_name} = {temp_new_el_js_var};\n"
+                        frame_js_changes += f"       }}\n"
+                        
+                        prev_attr_dict_for_element = {} # Treat as a new element for attribute setting purposes
+                        element_was_recreated_this_frame = True
+                    
+                    # Prepare attribute dictionaries for comparison (excluding internal _shape_type)
+                    attrs_to_set_on_dom = {k: v for k, v in current_attr_dict_for_frame.items() if k != '_shape_type'}
+                    prev_attrs_on_dom = {k: v for k, v in prev_attr_dict_for_element.items() if k != '_shape_type'}
+
+                    # Set/update attributes on the DOM element el{i}
+                    for k, v_current_val_str in attrs_to_set_on_dom.items():
+                        v_prev_val_str = prev_attrs_on_dom.get(k)
+                        # Ensure comparison is string-to-string if values are already strings
+                        if str(v_current_val_str) != str(v_prev_val_str):
+                            escaped_v_current = self._escape_js_string(str(v_current_val_str))
                             frame_js_changes += f"       {el_var_name}.setAttribute('{k}', '{escaped_v_current}');\n"
                     
-                    for k_prev in prev_attr_dict:
-                        if k_prev not in current_attr_dict:
+                    # Remove attributes that were present previously but not in the current set
+                    for k_prev in prev_attrs_on_dom:
+                        if k_prev not in attrs_to_set_on_dom:
                             frame_js_changes += f"       {el_var_name}.removeAttribute('{k_prev}');\n"
                     
-                    if i in previously_hidden_indices: # Element was hidden, now active
-                        frame_js_changes += f"       {el_var_name}.style.display = '';\n"
-                else:
-                    # Element el_i is inactive
-                    # Only hide if it was initialized and was not already hidden in the previous frame state
-                    if i < max_elements_initialized_in_js and i not in previously_hidden_indices:
-                        frame_js_changes += f"       {el_var_name}.style.display = 'none';\n"
+                    # Handle display style (if element was hidden and is now active)
+                    if i in previously_hidden_indices:
+                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.style) {el_var_name}.style.display = '';\n"
+                
+                else: # Element el{i} is inactive in this frame (i >= len(current_attributes_list))
+                    # Hide the element if it was initialized and not already marked as hidden in this frame's logic
+                    if i < max_elements_initialized_in_js and i not in previously_hidden_indices :
+                        # Check if el_var_name is defined and has a style property before trying to set display none
+                        frame_js_changes += f"       if (typeof {el_var_name} !== 'undefined' && {el_var_name} && {el_var_name}.style) {el_var_name}.style.display = 'none';\n"
                         current_frame_newly_hidden_indices.add(i)
                     elif i < max_elements_initialized_in_js and i in previously_hidden_indices:
-                        # It was already hidden, ensure it's part of the current hidden set if it remains hidden
+                        # If it was already hidden and remains unreferenced, keep it in the hidden set
                         current_frame_newly_hidden_indices.add(i)
-
+            
             # Update background color only if it changed
             if background_color_str != previous_background_color_str:
                 frame_js_changes += f"     {svg_container_var_name}.style.backgroundColor = '{background_color_str}';\n"
@@ -399,11 +601,22 @@ class HTMLParsedVMobject:
             # Only add a timeout if there are actual changes for this frame
             if frame_js_changes.strip():
                 self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED % (
-                    frame_js_changes.rstrip('\n'),
+                    frame_js_changes.rstrip('\n'), # Use rstrip to remove trailing newlines from frame_js_changes
                     1000 * time
                 )
                 self.js_updates += "\n"
-            previous_attributes_list = current_attributes_list
+            
+            # Update previous_attributes_map for the next frame iteration:
+            # It should store the attributes of all elements that were active in *this* frame.
+            new_previous_attributes_map_for_next_frame = {}
+            for idx, attrs_dict in enumerate(current_attributes_list):
+                new_previous_attributes_map_for_next_frame[idx] = dict(attrs_dict) # Deep copy
+            previous_attributes_map = new_previous_attributes_map_for_next_frame
+
+            # Update previous_element_tags_map for the next frame iteration:
+            # This map should reflect the actual DOM tag of el{i} after this frame's updates.
+            previous_element_tags_map = current_frame_active_dom_element_tags # Tags of elements active in this frame
+
             previously_hidden_indices = current_frame_newly_hidden_indices
 
         self.js_updates = self.js_updates.removesuffix("\n")
@@ -425,41 +638,3 @@ class HTMLParsedVMobject:
             f.write(js_content)
         with open(self.html_filename, "w") as f:
             f.write(self.html)
-    
-    def start_interactive(
-        self,
-        value_trackers: list[ValueTracker],
-        linspaces: list[np.ndarray],
-        animate_this=True
-    ):
-        if animate_this is False:
-            self.continue_updating = False
-            self.last_t = self.scene.renderer.time
-        print("This process can be slow, please wait!")
-        self.interactive_js = ""
-        filename = "update.svg"
-        combs = itertools.product(*linspaces)
-        combs_dict = ""
-        comb_now = ", ".join([str(v.get_value()) for v in value_trackers])
-        for comb in combs:
-            for vt, val in zip(value_trackers, comb):
-                self.scene.wait(1/self.scene.camera.frame_rate)
-                vt.set_value(val)
-            self.vmobject.to_svg(filename)
-            html_el_creations = f"{self.filename_base.lower()}.replaceChildren();\n"
-            _, attributes = svg2paths(filename)
-            i = 0
-            for attr in attributes:
-                html_el_creation = f"        var el{i} = document.createElementNS('http://www.w3.org/2000/svg', 'path');\n"            
-                for k, v in attr.items():
-                    html_el_creation += f"       el{i}.setAttribute('{k}', '{v}');\n"
-                html_el_creation += f"       {self.filename_base.lower()}.appendChild(el{i});\n"
-                html_el_creations += html_el_creation
-                i += 1
-            
-            combs_dict += "[" + ", ".join([str(v) for v in comb]) + """]: () => {
-                %s
-            },
-            """ % html_el_creations
-        self.interactive_js += JAVASCRIPT_INTERACTIVE_STRUCTURE % (combs_dict, comb_now)
-        os.remove(filename)
