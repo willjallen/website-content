@@ -30,6 +30,7 @@ JAVASCRIPT_STRUCTURE = """var rendered = false;
 var ready = true;
 var timeouts = [];
 var %s = document.getElementById("%s");
+%s // Placeholder for global element variable declarations (e.g., var el0, el1, ...)
 function render%s() {
     if (!ready) {
         for (var i=0; i<timeouts.length; i++) {
@@ -52,6 +53,11 @@ function render%s() {
 JAVASCRIPT_UPDATE_STRUCTURE = """    timeouts.push(setTimeout(function() {
         %s.replaceChildren();
         %s
+    }, %f))"""
+
+
+JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED = """    timeouts.push(setTimeout(function() {
+        %s // JavaScript commands for this frame
     }, %f))"""
 
 
@@ -114,31 +120,36 @@ class HTMLParsedVMobject:
         self.basic_html = basic_html
         self.update_html()
         self.js_updates = ""
+        self.frames_data = []
         self.continue_updating = True
         self.original_frame_width = self.scene.camera.frame_width
         self.original_frame_height = self.scene.camera.frame_height
         self.scene.add_updater(self.updater)
     
+    def _escape_js_string(self, value: str) -> str:
+        # Helper to escape strings for JS literals
+        value = value.replace('\\', '\\\\')  # Escape backslashes
+        value = value.replace("'", "\'")    # Escape single quotes
+        value = value.replace('\n', '\\n')  # Escape newlines
+        return value
     
     def updater(self, dt):
         if self.continue_updating is False:
             return
+        
+        current_frame_data = {}
         svg_filename = self.filename_base + str(self.current_index) + ".svg"
         self.vmobject.to_svg(svg_filename)
-        html_el_creations = ""
+        
         _, attributes = svg2paths(svg_filename)
-        i = 0
-        for attr in attributes:
-            html_el_creation = f"        var el{i} = document.createElementNS('http://www.w3.org/2000/svg', 'path');\n"            
-            for k, v in attr.items():
-                html_el_creation += f"       el{i}.setAttribute('{k}', '{v}');\n"
-            html_el_creation += f"       {self.filename_base.lower()}.appendChild(el{i});\n"
-            html_el_creations += html_el_creation
-            i += 1
-        background_color = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
-        background_color[-1] = background_color[-1] / 255
-        background_color = [str(par) for par in background_color]
-        html_el_creations += f"     {self.filename_base.lower()}.style.backgroundColor = 'rgb({', '.join(background_color)})';\n"
+        current_frame_data["attributes"] = attributes
+        
+        bg_color_rgba = color_to_int_rgba(self.scene.camera.background_color, self.scene.camera.background_opacity)
+        bg_color_rgba[-1] = bg_color_rgba[-1] / 255
+        bg_color_str_parts = [str(par) for par in bg_color_rgba]
+        current_frame_data["background_color_str"] = f"rgb({', '.join(bg_color_str_parts)})"
+        
+        current_frame_data["viewBox_str_array"] = None # Default to None
         if isinstance(self.scene, MovingCameraScene):
             frame = self.scene.camera.frame
             pixel_width = self.scene.camera.pixel_width * self.scene.camera.frame_width / self.original_frame_width
@@ -149,14 +160,11 @@ class HTMLParsedVMobject:
             pixel_center[1] = -pixel_center[1]
             pixel_center = pixel_center[:2]
             arr = [*pixel_center, pixel_width, pixel_height]
-            arr = [str(p) for p in arr]
-            html_el_creations += f"     {self.filename_base.lower()}.setAttribute('viewBox', '{' '.join(arr)}');\n"
-        self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE % (
-            self.filename_base.lower(),
-            html_el_creations,
-            1000 * self.scene.renderer.time
-        )
-        self.js_updates += "\n"
+            current_frame_data["viewBox_str_array"] = [str(p) for p in arr]
+            
+        current_frame_data["time"] = self.scene.renderer.time
+        self.frames_data.append(current_frame_data)
+        
         self.current_index += 1
         os.remove(svg_filename)
     
@@ -190,12 +198,99 @@ class HTMLParsedVMobject:
     
     def finish(self):
         self.scene.remove_updater(self.updater)
-        self.js_updates.removesuffix("\n")
         if not hasattr(self, "last_t"):
-            self.last_t = self.scene.renderer.time
+            if self.frames_data:
+                self.last_t = self.frames_data[-1]["time"]
+            else:
+                self.last_t = self.scene.renderer.time
+
+        self.js_updates = ""
+        svg_container_var_name = self.filename_base.lower()
+
+        # Determine the overall maximum number of elements needed
+        overall_max_elements = 0
+        if self.frames_data:
+            for frame_data_check in self.frames_data:
+                overall_max_elements = max(overall_max_elements, len(frame_data_check["attributes"]))
+        
+        global_el_vars_js = ""
+        for i in range(overall_max_elements):
+            global_el_vars_js += f"    var el{i};\n"
+
+        previous_attributes_list = []
+        max_elements_ever_active_in_dom = 0 # Tracks highest index an element has occupied for display:none logic
+        max_elements_initialized_in_js = 0  # Tracks elements for which create/append has been called
+        previously_hidden_indices = set()
+
+        for frame_data in self.frames_data:
+            current_attributes_list = frame_data["attributes"]
+            time = frame_data["time"]
+            viewBox_str_array = frame_data["viewBox_str_array"]
+            background_color_str = frame_data["background_color_str"]
+
+            frame_js_changes = ""
+            current_frame_newly_hidden_indices = set()
+
+            # Initialize and append new elements if needed
+            if len(current_attributes_list) > max_elements_initialized_in_js:
+                for i in range(max_elements_initialized_in_js, len(current_attributes_list)):
+                    el_var_name = f"el{i}"
+                    frame_js_changes += f"        {el_var_name} = document.createElementNS('http://www.w3.org/2000/svg', 'path');\n"
+                    frame_js_changes += f"        {svg_container_var_name}.appendChild({el_var_name});\n"
+                max_elements_initialized_in_js = len(current_attributes_list)
+            
+            # Update max_elements_ever_active_in_dom for display:none logic
+            if len(current_attributes_list) > max_elements_ever_active_in_dom:
+                max_elements_ever_active_in_dom = len(current_attributes_list)
+            elif len(previous_attributes_list) > max_elements_ever_active_in_dom: # Handles cases where elements are removed
+                 max_elements_ever_active_in_dom = len(previous_attributes_list)
+
+            # Attribute diffing and updates
+            for i in range(max_elements_ever_active_in_dom):
+                el_var_name = f"el{i}"
+                if i < len(current_attributes_list):
+                    # Element el_i is active in this frame
+                    current_attr_dict = current_attributes_list[i]
+                    prev_attr_dict = previous_attributes_list[i] if i < len(previous_attributes_list) else {}
+
+                    for k, v_current in current_attr_dict.items():
+                        v_prev = prev_attr_dict.get(k)
+                        if v_current != v_prev:
+                            escaped_v_current = self._escape_js_string(v_current)
+                            frame_js_changes += f"       {el_var_name}.setAttribute('{k}', '{escaped_v_current}');\n"
+                    
+                    for k_prev in prev_attr_dict:
+                        if k_prev not in current_attr_dict:
+                            frame_js_changes += f"       {el_var_name}.removeAttribute('{k_prev}');\n"
+                    
+                    if i in previously_hidden_indices: # Element was hidden, now active
+                        frame_js_changes += f"       {el_var_name}.style.display = '';\n"
+                else:
+                    # Element el_i is inactive (it existed before or is within max_elements_ever_active_in_dom but not in this frame's active list)
+                    if i < max_elements_initialized_in_js: # Only hide if it was actually initialized
+                        frame_js_changes += f"       {el_var_name}.style.display = 'none';\n"
+                        current_frame_newly_hidden_indices.add(i)
+
+            frame_js_changes += f"     {svg_container_var_name}.style.backgroundColor = '{background_color_str}';\n"
+
+            if viewBox_str_array:
+                viewBox_value = ' '.join(viewBox_str_array)
+                frame_js_changes += f"     {svg_container_var_name}.setAttribute('viewBox', '{viewBox_value}');\n"
+
+            self.js_updates += JAVASCRIPT_UPDATE_STRUCTURE_OPTIMIZED % (
+                frame_js_changes.rstrip('\n'),
+                1000 * time
+            )
+            self.js_updates += "\n"
+            previous_attributes_list = current_attributes_list
+            previously_hidden_indices = current_frame_newly_hidden_indices
+
+        self.js_updates = self.js_updates.removesuffix("\n")
+        
         js_content = JAVASCRIPT_STRUCTURE % (
             self.filename_base.lower(),
             self.filename_base,
+            global_el_vars_js, # For global el declarations
             self.filename_base,
             self.js_updates,
             1000 * self.last_t
