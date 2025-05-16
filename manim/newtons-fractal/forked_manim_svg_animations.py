@@ -4,7 +4,7 @@ Refactored `forked_manim_svg_animations.py`  (May 2025)
 
 This version keeps the **public API** identical (e.g. `HTMLParsedVMobject` is
 constructed and used in exactly the same way) **but restructures the internals**
-so that it is now trivial to add optimisation / transformation passes to the
+so that it is now trivial to add optimization / transformation passes to the
 JavaScript that drives the final SVG animation.
 
 *  The heavy-weight logic that *builds* the list-of-JS-statements for each frame
@@ -13,9 +13,9 @@ JavaScript that drives the final SVG animation.
    post-processing passes.  Each pass receives the complete list of frames as
    *mutable* Python lists and may rewrite them in place or return a new value.
 *  The default pipeline contains only the identity pass, so the generated
-   output is byte-for-byte identical to the previous behaviour.
+   output is byte-for-byte identical to the previous behavior.
 
-Example optimisation plug-in  (place **anywhere** after the imports, or in a
+Example optimization plug-in  (place **anywhere** after the imports, or in a
 separate module that you `import` before you call `finish()`):
 
 from forked_manim_svg_animations import register_optimizer
@@ -69,7 +69,7 @@ from manim import *
 from manim_mobject_svg import *  # noqa: F401, pylint: disable=wildcard-import
 from forked_svg import create_svg_from_vgroup
 
-import cloudpickle  # for serialising lambda-containing VMobjects across processes
+import cloudpickle  # for serializing lambda-containing VMobjects across processes
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -128,28 +128,28 @@ function render{scene_name}() {{
 """
 
 # -----------------------------------------------------------------------------
-#                 Optimiser framework
+#                 Optimizer framework
 # -----------------------------------------------------------------------------
 
 Optimizer = Callable[[List[List[str]], Dict[str, Any]], List[List[str]]]
 
 # Registry filled via @register_optimizer decorator
-_OPTIMISERS: List[Optimizer] = []
+_OPTIMIZERS: List[Optimizer] = []
 
 def register_optimizer(func: Optimizer) -> Optimizer:  # noqa: D401
-    """Decorator register *func* as an optimisation pass.
+    """Decorator register *func* as an optimization pass.
 
     The function must take `(frames, context)` and *either* modify `frames` in
     place *or* return a **new** list of frames (the return value will be used
     if it is not `None`).  `context` is a **plain dict** with metadata that may
-    be useful to the optimiser (pool sizes, svg_id, ...). The contents are small
+    be useful to the optimizer (pool sizes, svg_id, ...). The contents are small
     on purpose extend as you see fit.
     """
-    _OPTIMISERS.append(func)
+    _OPTIMIZERS.append(func)
     return func
 
-# Identity pass so that, even with no user supplied optimisers, we keep the
-# behaviour 100 % identical.
+# Identity pass so that, even with no user supplied optimizers, we keep the
+# behavior 100 % identical.
 @register_optimizer
 def _noop(frames: List[List[str]], context: Dict[str, Any]) -> List[List[str]]:  # noqa: D401
     return frames
@@ -191,7 +191,7 @@ def _round_value(attr: str, value: str, precision: int = 2) -> str:  # lifted un
 def _detect_circle(path_d: str, tol: float = 1e-2):  # unchanged helper
     try:
         path = parse_path(path_d)
-    except Exception:  # pragma: no cover – svgpathtools throws many…
+    except Exception:
         return None
     if len(path) == 0 or not (path.iscontinuous() and path.isclosed()):
         return None
@@ -225,11 +225,11 @@ class _SceneFrameMeta:  # slim container for per-frame scene data
 @dataclass
 class _PathElementState:  # mutable dict behind the scenes but with a fixed type
     attrs: Dict[str, str] = field(default_factory=dict)
-    display: str | None = None  # '', 'none', …
+    display: str | None = None  # '', 'none', ...
 
 
 # -----------------------------------------------------------------------------
-#                 3 Frame builder
+#                 Frame builder
 # -----------------------------------------------------------------------------
 
 class _JSFrameBuilder:
@@ -253,13 +253,13 @@ class _JSFrameBuilder:
         self.all_uuids = list(tracked_objects.keys())
         self.num_frames = len(scene_frames)
 
-        # These are filled by _analyse_pool_sizes() ↓
+        # These are filled by _analyze_pool_sizes()
         self.max_paths = 0
         self.max_circles = 0
 
     # utils
 
-    def _analyse_pool_sizes(self) -> None:
+    def _analyze_pool_sizes(self) -> None:
         for i in range(self.num_frames):
             paths = circles = 0
             for uuid in self.all_uuids:
@@ -278,9 +278,9 @@ class _JSFrameBuilder:
 
         * `element_declarations` - crust that goes right after the `const svg` …
         * `frames`               - list[ frameCommands ]
-        * `context`              - small dict handed to optimisers
+        * `context`              - small dict handed to optimizers
         """
-        self._analyse_pool_sizes()
+        self._analyze_pool_sizes()
 
         # Pre-allocate python-side state mirrors
         path_state: List[_PathElementState] = [ _PathElementState() for _ in range(self.max_paths) ]
@@ -315,7 +315,7 @@ class _JSFrameBuilder:
         # uuid pool leases:
         # each uuid is leased to a slot in the path_pool or circle_pool *for the contiguous range(s) of frames* where it is present
         # when the object disappears, the slot becomes free and can be reused by another object
-        # this prevents shuffling around pool slots within an active range while still maximising pool reuse overall
+        # this prevents shuffling around pool slots within an active range while still maximizing pool reuse overall
         
         # Dynamic lease state that will be updated as we iterate over frames
         path_slot_map: Dict[str, int] = {}
@@ -372,7 +372,7 @@ class _JSFrameBuilder:
                     if uuid not in path_slot_map:
                         # Lease a free slot for this new active range
                         if not free_path_slots:
-                            raise RuntimeError("No free path slot available – max_paths mis-computed? ")
+                            raise RuntimeError("No free path slot available - max_paths mis-computed? ")
                         path_slot_map[uuid] = free_path_slots.pop(0)
                     slot = path_slot_map[uuid]
                     js_elem = f"path_pool[{slot}]"
@@ -435,7 +435,7 @@ class _JSFrameBuilder:
 
             frames_js.append(cmds)
 
-        # Build small optimisation context
+        # Build small optimization context
         opt_context = {
             "svg_var": self.svg_var,
             "scene_name": self.scene_name,
@@ -503,11 +503,11 @@ class HTMLParsedVMobject:
         tmp_svg_path = os.path.join(os.getcwd(), "tempout", f"{self.basename}_{self.frame_index}.svg")
         self._svg_paths[self.frame_index] = tmp_svg_path
 
-        # Serialise VMobject with cloudpickle so lambdas are handled.
-        vm_serialised: bytes = cloudpickle.dumps(vm_copy)
+        # Serialize VMobject with cloudpickle so lambdas are handled.
+        vm_serialized: bytes = cloudpickle.dumps(vm_copy)
 
         # Queue for background export (only bytes – picklable by stdlib)
-        self._batch.append((self.frame_index, vm_serialised, tmp_svg_path))
+        self._batch.append((self.frame_index, vm_serialized, tmp_svg_path))
         if len(self._batch) >= self.batch_size:
             self._spawn_worker(self._batch)
             self._batch = []
@@ -535,7 +535,7 @@ class HTMLParsedVMobject:
     # -------------------------------------------------------------------------
     @staticmethod
     def _worker(batch: List[Tuple[int, bytes, str]], cfg_bytes: bytes) -> None:  # child process
-        """Render each VMobject (sent as *cloudpickle* bytes) to SVG – heavy Cairo work."""
+        """Render each VMobject (sent as *cloudpickle* bytes) to SVG - heavy Cairo work."""
         import cloudpickle  # re-import inside subprocess (safe even if absent globally)
         # Apply main-process manim config first.
         from manim import config as _mconf  # noqa: N812 – keep camel for parity with manim
@@ -558,7 +558,7 @@ class HTMLParsedVMobject:
 
     def _spawn_worker(self, batch: List[Tuple[int, bytes, str]]) -> None:
         """Fork a *detached* process executing :py:meth:`_worker`."""
-        # Each worker gets its *own* copy of the batch list (pickle serialised).
+        # Each worker gets its *own* copy of the batch list (pickle serialized).
         p = Process(target=self._worker, args=(batch, self._cfg_bytes))
         p.daemon = True  # die with parent even if we forget join()
         p.start()
@@ -667,24 +667,6 @@ class HTMLParsedVMobject:
             self._parse_frame(idx, svg_path)
         #-------------------------------------------------------------------------
 
-        # Early out if nothing happened at all
-        if num_frames == 0 or not self.tracked_objects:
-            os.makedirs(os.path.dirname(self.js_path), exist_ok=True)
-            with open(self.js_path, "w", encoding="utf-8") as f_js:
-                element_decls = "    const path_pool = [];\n    const circle_pool = [];"
-                f_js.write(
-                    JS_WRAPPER.format(
-                        svg_var=self.basename.lower(),
-                        svg_id=self.basename,
-                        element_declarations=element_decls,
-                        frames_array="const frames = [];",
-                        scene_name=self.basename,
-                    )
-                )
-            with open(self.html_path, "w", encoding="utf-8") as f_html:
-                f_html.write(self.html_markup)
-            return
-
         # Build per-frame JS arrays 
         builder = _JSFrameBuilder(
             tracked_objects=self.tracked_objects,
@@ -694,13 +676,13 @@ class HTMLParsedVMobject:
         )
         element_decls, frames_js, opt_ctx = builder.build_frames()
 
-        # Optimiser pipeline
-        for optim in _OPTIMISERS:
+        # Optimizer pipeline
+        for optim in _OPTIMIZERS:
             maybe_new = optim(frames_js, opt_ctx) or frames_js
             # ensure *exact* same nested list structure if pass returns None
             frames_js = maybe_new
 
-        # Serialise JS / HTML
+        # Serialize JS / HTML
         frame_blocks: List[str] = []
         for idx, cmds in enumerate(frames_js):
             indented = "\n        ".join(cmds)
