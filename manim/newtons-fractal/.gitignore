@@ -1,5 +1,6 @@
 media/
 temp/
+tempout/
 
 # General
 .DS_Store

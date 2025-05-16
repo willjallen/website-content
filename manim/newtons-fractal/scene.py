@@ -219,7 +219,6 @@ class Figure5(Scene):
         fx_arr = []
         
         fx_graph = ax.plot(f, x_range=[-2, 2], use_smoothing=True)
-
         
         x_point = Dot(ax.coords_to_point(x_0, 0), color=RED)
         x_n_manim_arr.append(x_point)
@@ -228,7 +227,6 @@ class Figure5(Scene):
         fx_arr.append(fx_point)
         
         line = ax.get_vertical_line(ax.coords_to_point(x_0, f(x_0)))
-        line.debug_name = "abcdef"
         x_text = Tex('$x_0$').next_to(x_point, UP)
         fx_text = Tex('$f(x_0)$').next_to(fx_point, DOWN)
         
@@ -249,9 +247,9 @@ class Figure5(Scene):
         tx_intercept_text.color = GREEN
         text_arr.append(tx_intercept_text)
         
-        vg = VGroup()
-        parsed = HTMLParsedVMobject(vg, self)
-        vg_add_tagged(vg, [ax, fx_graph, line, x_text, fx_text, t_graph, tx_text, tx_intercept, x_point, fx_point, tx_intercept_text])
+        self.vg = VGroup()
+        parsed = HTMLParsedVMobject(self.vg, self)
+        vg_add_tagged(self.vg, [ax, fx_graph, line, x_text, fx_text, t_graph, tx_text, tx_intercept, x_point, fx_point, tx_intercept_text])
 
         self.add(ax, fx_graph, line, x_text, fx_text, t_graph, tx_text, tx_intercept, x_point, fx_point, tx_intercept_text)
         
@@ -264,52 +262,43 @@ class Figure5(Scene):
             tx_text.animate.set_opacity(0),
             t_graph.animate.set_opacity(0)
             )
-        # vg.remove(x_text, fx_text, line, tx_text, t_graph)
+        
+        self.vg.remove(x_text, fx_text, line, tx_text, t_graph)
         self.remove(x_text, fx_text, line, tx_text, t_graph)
 
         x_n = x_0 - f(x_0)/fp(x_0)
         x_n_arr.append(x_n)
- 
-        # x_test_text = Tex('aaaaaaaa')
-        # x_test_text.color = GREEN
-        # x_test_text.to_corner(UR)
-        # vg.add(x_test_text)
         
         x_n_text = Tex('$x_ 1\\approx$ ' + f'{x_n:.4f}')
         x_n_text.color = GREEN
         x_n_text.to_corner(DR)
-        x_n_text.debug_name = "x_n_text_parent"
-        vg_add_tagged(vg, [x_n_text], "x_n_text")
+        vg_add_tagged(self.vg, [x_n_text])
         
         self.play(Create(x_n_text))
-        
-        parsed.finish()
-        return
-
         
         for n in range(2, 6):
             
             x_point = Dot(ax.coords_to_point(x_n, 0), color=RED)
             line = ax.get_vertical_line(ax.coords_to_point(x_n, f(x_n)))
-            vg.add(line)
+            vg_add_tagged(self.vg, [line])
             self.play(Create(line))
 
             fx_point = Dot(ax.coords_to_point(x_n, f(x_n)), color=BLUE)
             fx_arr.append(fx_point)
-            vg.add(fx_point)
+            vg_add_tagged(self.vg, [fx_point])
             self.play(Create(fx_point))
             
             t = lambda x: fp(x_n)*(x - x_n) + f(x_n)
 
             t_graph = ax.plot(t, x_range=[-2, 2], use_smoothing=True)
             t_graph.color = RED
-            vg.add(t_graph)
+            vg_add_tagged(self.vg, [t_graph])
             self.play(Create(t_graph))
             
             # Label for the tangent at the current x_n (which is x_{n-1} in sequence x_0, x_1, ...)
             tangent_label = Tex('$t(x_{'+str(n-1)+'})$').next_to(fx_point, RIGHT * 4)
             tangent_label.color = RED
-            vg.add(tangent_label)
+            vg_add_tagged(self.vg, [tangent_label])
             self.play(Create(tangent_label))
         
             tx_intercept = Dot(ax.coords_to_point(x_n - (f(x_n)/fp(x_n)),0))
@@ -318,29 +307,30 @@ class Figure5(Scene):
             x_n = x_n - f(x_n)/fp(x_n)
             x_n_arr.append(x_n)
             
-            new_x_n_text = Tex('$x_'+str(n)+'\\approx$ ' + str(x_n))
+            new_x_n_text = Tex('$x_'+str(n)+'\\approx$ ' + f'{x_n:.4f}')
+            new_x_n_text.color = GREEN
             new_x_n_text.to_corner(DR)
 
             x_n_manim_arr.append(tx_intercept)
-            vg.add(new_x_n_text, tx_intercept)
+            vg_add_tagged(self.vg, [new_x_n_text, tx_intercept])
             self.play(ReplacementTransform(x_n_text, new_x_n_text), Create(tx_intercept))
-            vg.remove(x_n_text)
+            self.vg.remove(x_n_text)
             x_n_text = new_x_n_text
             
             if(n == 2):
                 tx_intercept_text = Tex('$x_'+str(n)+'$').next_to(tx_intercept, DOWN) 
                 tx_intercept_text.color = GREEN
                 text_arr.append(tx_intercept_text)
-                vg.add(tx_intercept_text)
+                vg_add_tagged(self.vg, [tx_intercept_text])
                 self.play(Create(tx_intercept_text))
             
             self.play(FadeOut(t_graph), FadeOut(line), FadeOut(tangent_label))
-            vg.remove(t_graph, line, tangent_label)
+            self.vg.remove(t_graph, line, tangent_label)
 
             if(n == 3):
                 zoom_out_square = Rectangle(color=YELLOW)
                 zoom_out_square.move_to(tx_intercept)
-                vg.add(zoom_out_square)
+                vg_add_tagged(self.vg, [zoom_out_square])
                 self.play(Create(zoom_out_square))
                 
                 # Store old mobjects that will be transformed
@@ -349,7 +339,6 @@ class Figure5(Scene):
                 # x_n_manim_arr contains x0, x1, x2, x3 dots. All need to be transformed.
                 # fx_arr contains f(x0), f(x1), f(x2) dots. All need to be transformed.
 
-                # Create new mobjects for the zoomed view
                 new_ax = Axes(
                     x_range=[1.1, 1.3, 0.1],
                     y_range=[-0.2, 0.2, 0.1],
@@ -358,8 +347,7 @@ class Figure5(Scene):
                 )
                 new_fx_graph = new_ax.plot(f, x_range=[1.1, 1.3], use_smoothing=True)
                 
-                # Add new persistent mobjects to VGroup BEFORE animation
-                vg.add(new_ax, new_fx_graph)
+                vg_add_tagged(self.vg, [new_ax, new_fx_graph])
 
                 new_x_n_dots_for_vg = []
                 x_n_transforms = []
@@ -367,7 +355,7 @@ class Figure5(Scene):
                     old_dot = x_n_manim_arr[i]
                     new_dot = Dot(new_ax.coords_to_point(x_n_arr[i], 0), color=GREEN)
                     new_x_n_dots_for_vg.append(new_dot)
-                    vg.add(new_dot) 
+                    vg_add_tagged(self.vg, [new_dot])
                     x_n_transforms.append(ReplacementTransform(old_dot, new_dot))
                 
                 new_fx_dots_for_vg = []
@@ -378,17 +366,17 @@ class Figure5(Scene):
                     # new_fx_dot is f(x_n_arr[i]) on new_ax
                     new_dot = Dot(new_ax.coords_to_point(x_n_arr[i], f(x_n_arr[i])), color=BLUE)
                     new_fx_dots_for_vg.append(new_dot)
-                    vg.add(new_dot)
+                    vg_add_tagged(self.vg, [new_dot])
                     fx_transforms.append(ReplacementTransform(old_dot, new_dot))
                     
                 # Fade out labels for x1, x2 as they might clutter zoomed view
                 # text_arr contains labels for x1 (index 0) and x2 (index 1)
                 if len(text_arr) >= 2: # Ensure elements exist before trying to fade
                     self.play(FadeOut(text_arr[0]), FadeOut(text_arr[1]))
-                    vg.remove(text_arr[0], text_arr[1])
+                    self.vg.remove(text_arr[0], text_arr[1])
                 elif len(text_arr) == 1:
                     self.play(FadeOut(text_arr[0]))
-                    vg.remove(text_arr[0])
+                    self.vg.remove(text_arr[0])
                     
                 self.play(
                     ReplacementTransform(old_ax, new_ax), 
@@ -399,11 +387,11 @@ class Figure5(Scene):
                 )
                 
                 # Remove old mobjects from VGroup AFTER they've been transformed away
-                vg.remove(old_ax, old_fx_graph)
+                self.vg.remove(old_ax, old_fx_graph)
                 for dot in x_n_manim_arr: # These are the original dots
-                    vg.remove(dot)
+                    self.vg.remove(dot)
                 for dot in fx_arr: # These are the original dots
-                    vg.remove(dot)
+                    self.vg.remove(dot)
                 
                 # Update references to the new mobjects
                 ax = new_ax

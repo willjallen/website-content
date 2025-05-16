@@ -93,20 +93,32 @@ const {svg_var} = document.getElementById(\"{svg_id}\");
 {frames_array}
 
 // Kick-off entry point (called from HTML or user code)
+let TARGET_DT = 100;   // ms between logical frames
+
 function render{scene_name}() {{
     if (playing) return;          // prevent overlapping playbacks
     playing  = true;
     rendered = false;
+
     let i = 0;
-    function step() {{
-        if (i < frames.length) {{
-            frames[i++]();        // run one frame's updater
-            requestAnimationFrame(step);
-        }} else {{
-            playing  = false;
-            rendered = true;
+    let lastTime = performance.now();
+
+    function step(now) {{
+        // Only advance when at least TARGET_DT ms have elapsed
+        if (now - lastTime >= TARGET_DT) {{
+            lastTime = now;
+
+            if (i < frames.length) {{
+                frames[i++]();    // run one frame's updater
+            }} else {{
+                playing  = false;
+                rendered = true;
+                return;          // stop when finished
+            }}
         }}
+        requestAnimationFrame(step);   // keep the loop alive
     }}
+
     requestAnimationFrame(step);
 }}
 """
@@ -207,21 +219,18 @@ class _SceneFrameMeta:  # slim container for per-frame scene data
 
 
 @dataclass
-class _PathElementState:  # mutable dict behind the scenes but with a fixed type
+class _PathElementState:  # mutable dict behind the scenes but with a fixed type
     attrs: Dict[str, str] = field(default_factory=dict)
     display: str | None = None  # '', 'none', …
 
 
 # -----------------------------------------------------------------------------
-#                 3 — Frame builder (unchanged *logic*, nicer *code*)
+#                 3 Frame builder
 # -----------------------------------------------------------------------------
 
 class _JSFrameBuilder:
-    """Translate the collected raw data → JS-statement lists.
-
-    This still follows *exactly* the previous algorithm (pooling, diffing …)
-    but lives in its own self-contained helper so that `HTMLParsedVMobject`
-    stays approachable.
+    """
+    Translate the collected raw data -> JS-statement lists.
     """
 
     def __init__(
@@ -231,7 +240,9 @@ class _JSFrameBuilder:
         svg_var: str,
         scene_name: str,
     ) -> None:
+        # {uuid: [frame_0_data, frame_1_data, ...]}, frame data is None for frames that don't have this object
         self.tracked_objects = tracked_objects
+        # {frame_0_meta, frame_1_meta, ...}
         self.scene_frames = scene_frames
         self.svg_var = svg_var
         self.scene_name = scene_name
@@ -297,6 +308,18 @@ class _JSFrameBuilder:
                 f"circle_pool.push(c{i});",
             ])
 
+        # uuid pool leases:
+        # each uuid is leased to a slot in the path_pool or circle_pool *for the contiguous range(s) of frames* where it is present
+        # when the object disappears, the slot becomes free and can be reused by another object
+        # this prevents shuffling around pool slots within an active range while still maximising pool reuse overall
+        
+        # Dynamic lease state that will be updated as we iterate over frames
+        path_slot_map: Dict[str, int] = {}
+        circle_slot_map: Dict[str, int] = {}
+        # Pools of free slot indices (pre-filled with the full capacity)
+        free_path_slots: List[int] = list(range(self.max_paths))
+        free_circle_slots: List[int] = list(range(self.max_circles))
+
         # per-frame command editing
         frames_js: List[List[str]] = []
 
@@ -305,8 +328,20 @@ class _JSFrameBuilder:
             if frame_idx == 0:
                 cmds.extend(init_lines)
 
-            path_slot = circ_slot = 0
-            active_this_frame: set[Tuple[str, int]] = set()
+            # Track which slots are actively used in this frame
+            path_used_this_frame: set[int] = set()
+            circle_used_this_frame: set[int] = set()
+
+            # Helper to release a slot once an object disappears
+            def _release_slot(uuid: str):
+                if uuid in path_slot_map:
+                    slot = path_slot_map.pop(uuid)
+                    if slot not in free_path_slots:
+                        free_path_slots.append(slot)
+                elif uuid in circle_slot_map:
+                    slot = circle_slot_map.pop(uuid)
+                    if slot not in free_circle_slots:
+                        free_circle_slots.append(slot)
 
             for uuid in self.all_uuids:
                 current_attrs = (
@@ -314,20 +349,43 @@ class _JSFrameBuilder:
                     if frame_idx < len(self.tracked_objects[uuid])
                     else None
                 )
+
                 if not current_attrs:
+                    # Object is NOT present in this frame – release any previous lease
+                    _release_slot(uuid)
                     continue
 
                 shape = current_attrs.get("_shape", "path")
+
+                # If the object changes type (path ↔ circle) release its previous slot first
+                if shape == "path" and uuid in circle_slot_map:
+                    _release_slot(uuid)
+                elif shape == "circle" and uuid in path_slot_map:
+                    _release_slot(uuid)
+
                 if shape == "path":
-                    js_elem, slot, state_list = f"path_pool[{path_slot}]", path_slot, path_state
-                    path_slot += 1
-                else:
-                    js_elem, slot, state_list = f"circle_pool[{circ_slot}]", circ_slot, circ_state
-                    circ_slot += 1
-                active_this_frame.add((shape, slot))
+                    # Ensure we have / obtain a slot for this uuid
+                    if uuid not in path_slot_map:
+                        # Lease a free slot for this new active range
+                        if not free_path_slots:
+                            raise RuntimeError("No free path slot available – max_paths mis-computed? ")
+                        path_slot_map[uuid] = free_path_slots.pop(0)
+                    slot = path_slot_map[uuid]
+                    js_elem = f"path_pool[{slot}]"
+                    state_list = path_state
+                    path_used_this_frame.add(slot)
+                else:  # circle
+                    if uuid not in circle_slot_map:
+                        if not free_circle_slots:
+                            raise RuntimeError("No free circle slot available – max_circles mis-computed? ")
+                        circle_slot_map[uuid] = free_circle_slots.pop(0)
+                    slot = circle_slot_map[uuid]
+                    js_elem = f"circle_pool[{slot}]"
+                    state_list = circ_state
+                    circle_used_this_frame.add(slot)
 
                 elem_state = state_list[slot]
-                # Sync attrs
+                # --- Attribute diff/patch -------------------------------------------------
                 set_now: Dict[str, str] = {}
                 for k, v in current_attrs.items():
                     if k == "_shape":
@@ -338,23 +396,23 @@ class _JSFrameBuilder:
                         esc = v_str.replace("\\", "\\\\").replace("'", "\\'")
                         cmds.append(f"{js_elem}.setAttribute('{k}', '{esc}');")
                         elem_state.attrs[k] = v_str
-                # Remove stale
+                # Remove stale attributes
                 for stale in list(elem_state.attrs.keys()):
                     if stale not in set_now and stale != "style.display":
                         cmds.append(f"{js_elem}.removeAttribute('{stale}');")
                         del elem_state.attrs[stale]
-                # Ensure visible
+                # Ensure element is visible
                 if elem_state.display != "":
                     cmds.append(f"{js_elem}.style.display = '';")
                     elem_state.display = ""
 
-            # Hide unused pool slots
+            # Hide unused pool slots (those that were *not* touched this frame)
             for i in range(self.max_paths):
-                if ("path", i) not in active_this_frame and path_state[i].display != "none":
+                if i not in path_used_this_frame and path_state[i].display != "none":
                     cmds.append(f"path_pool[{i}].style.display = 'none';")
                     path_state[i].display = "none"
             for i in range(self.max_circles):
-                if ("circle", i) not in active_this_frame and circ_state[i].display != "none":
+                if i not in circle_used_this_frame and circ_state[i].display != "none":
                     cmds.append(f"circle_pool[{i}].style.display = 'none';")
                     circ_state[i].display = "none"
 
@@ -401,7 +459,11 @@ class HTMLParsedVMobject:
         self.js_path = os.path.join("media", "svg_animations", self.basename + ".js")
 
         self.frame_index = 0
+        
+        # {uuid: [frame_0_data, frame_1_data, ...]}, frame data is None for frames that don't have this object
         self.tracked_objects: Dict[str, List[Dict[str, str] | None]] = {}
+        
+        # {frame_0_meta, frame_1_meta, ...}
         self.scene_frames: List[_SceneFrameMeta] = []
         self.collecting = True
 
@@ -434,21 +496,14 @@ class HTMLParsedVMobject:
             return
 
         base_tmp_filename = f"{self.basename}_{self.frame_index}"
+        current_frame_svg_data: Dict[str, Dict[str, str]] = {} # Stores {uuid: attribute_dict}
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            svg_filepath, uuid_list_filepath = create_svg_from_vgroup(self.vmobject, str(base_tmp_filename))
-
-            uuids_from_file: list[str] = []
-            if os.path.exists(uuid_list_filepath):
-                with open(uuid_list_filepath, 'r') as f_uuid_list:
-                    uuids_from_file = [line.strip() for line in f_uuid_list if line.strip()]
-            else:
-                print(f"ERROR: UUID list file {uuid_list_filepath} was not generated for frame {self.frame_index}. No SVG data can be reliably mapped for this frame.")
-
-            temp_parsed_svg_data_for_paths: list[dict] = [] # Holds parsed data for paths found in SVG
-            svg_paths_found_count = 0
+            tmp_svg_path = os.path.join(os.getcwd(), 'tempout', f"{base_tmp_filename}.svg")
+            svg_filepath_obj = create_svg_from_vgroup(self.vmobject, tmp_svg_path)
 
             try:
-                tree = ET.parse(svg_filepath)
+                tree = ET.parse(str(svg_filepath_obj))
                 root = tree.getroot()
                 ns_uri = "http://www.w3.org/2000/svg"
                 if root.tag.startswith("{"):
@@ -456,13 +511,18 @@ class HTMLParsedVMobject:
                     if end_brace_index != -1:
                         ns_uri = root.tag[1:end_brace_index]
                 ns = {"svg": ns_uri}
-                svg_path_elements = root.findall(".//svg:path", ns)
-                svg_paths_found_count = len(svg_path_elements)
 
-                for path_element in svg_path_elements:
+                svg_path_elements_with_id = root.findall(".//svg:path[@id]", ns)
+
+                for path_element in svg_path_elements_with_id:
+                    uuid_str = path_element.get("id")
+                    if not uuid_str:
+                        print(f"ERROR: No UUID found for path element in frame {self.frame_index}. Skipping this object.")
+
                     raw_attr = dict(path_element.attrib)
-                    entry = {}
+                    entry: Dict[str, str] = {} 
                     path_def = str(raw_attr.get("d", ""))
+
                     circle_params = _detect_circle(path_def)
                     if circle_params:
                         cx, cy, r = circle_params
@@ -472,68 +532,50 @@ class HTMLParsedVMobject:
                         entry["r"]  = _round_value("r",  str(r))
                     else:
                         entry["_shape"] = "path"
-                        entry["d"] = _round_value("d", path_def)
-                    for k, v in raw_attr.items():
-                        if k == "d":
-                            if entry["_shape"] == "path" and "d" not in entry:
-                                entry["d"] = _round_value("d", path_def)
+                        # The 'd' attribute itself will be processed in the loop below if it's a path
+
+                    for k, v_obj in raw_attr.items():
+                        v = str(v_obj)
+                        if k == "id":
                             continue
-                        entry[k] = _round_value(k, str(v))
-                    temp_parsed_svg_data_for_paths.append(entry)
+                        if k == "d":
+                            if entry["_shape"] == "path": # Only add 'd' attribute if it's a path
+                                entry["d"] = _round_value("d", v)
+                            # If shape is "circle", 'd' attribute is ignored (cx, cy, r are used)
+                            continue
+                        
+                        if entry["_shape"] == "circle" and k in ("cx", "cy", "r"):
+                            continue
+                        
+                        entry[k] = _round_value(k, v)
+                    
+                    current_frame_svg_data[uuid_str] = entry
 
             except (ET.ParseError, FileNotFoundError) as e:
-                print(f"Error parsing SVG {svg_filepath} for frame {self.frame_index}: {e}. No SVG data will be used.")
-                # temp_parsed_svg_data_for_paths remains empty, svg_paths_found_count is 0 or from len before error
+                print(f"Error parsing SVG {str(svg_filepath_obj)} for frame {self.frame_index}: {e}. No objects will be processed from SVG for this frame.")
+                # current_frame_svg_data will remain empty or partially filled if error was mid-loop.
             
-            # Core data mapping logic:
-            # uuids_from_file is the source of truth for *rendered* elements this frame.
-            mapped_uuids_in_current_frame = set()
+        # Update self.tracked_objects based on the data parsed from the current frame's SVG
+        all_uuids_to_process = set(self.tracked_objects.keys()).union(set(current_frame_svg_data.keys()))
 
-            if uuids_from_file and len(uuids_from_file) == svg_paths_found_count:
-                print(f"Frame {self.frame_index}: Found {len(uuids_from_file)} UUIDs in file, {svg_paths_found_count} paths in SVG")
-                for i, uuid_str in enumerate(uuids_from_file):
-                    if uuid_str not in self.tracked_objects:
-                        # New UUID encountered via .txt file, ensure it's initialized for all previous frames with None
-                        self.tracked_objects[uuid_str] = [None] * self.frame_index
-                    elif len(self.tracked_objects[uuid_str]) < self.frame_index:
-                        # Existing UUID, but its history is shorter than expected (e.g. reappeared after absence)
-                        self.tracked_objects[uuid_str].extend([None] * (self.frame_index - len(self.tracked_objects[uuid_str])))
-                    
-                    # Append current frame's data
-                    self.tracked_objects[uuid_str].append(temp_parsed_svg_data_for_paths[i])
-                    mapped_uuids_in_current_frame.add(uuid_str)
-            elif uuids_from_file or svg_paths_found_count > 0: # Mismatch case
-                print(f"Frame {self.frame_index}: WARNING - Mismatch between UUIDs from file ({len(uuids_from_file)}) and SVG paths found ({svg_paths_found_count}). Attempting to copy data from previous frame for existing tracked objects.")
-                if self.frame_index > 0:
-                    for uuid_str_to_copy in self.tracked_objects.keys():
-                        # Ensure this UUID was present up to the previous frame.
-                        # Its list should have length self.frame_index (elements for frames 0 to frame_index-1)
-                        if len(self.tracked_objects[uuid_str_to_copy]) == self.frame_index:
-                            prev_data = self.tracked_objects[uuid_str_to_copy][self.frame_index - 1]
-                            self.tracked_objects[uuid_str_to_copy].append(prev_data) # Copy previous data for current frame
-                            # Mark as handled for this frame, regardless of whether prev_data was None or actual data.
-                            # This prevents the later block from appending another None if prev_data was None
-                            # and correctly reflects that this UUID's state for the current frame has been determined.
-                            mapped_uuids_in_current_frame.add(uuid_str_to_copy)
-                else: # self.frame_index == 0
-                    print(f"Frame {self.frame_index}: Mismatch on first frame (frame_index 0). Cannot copy previous data. Objects will be handled by subsequent logic.")
-            # For any UUID tracked previously (or part of current family) but not mapped in *this* frame, append None.
-            # Also ensures any new UUIDs from current family (if not in .txt) are initialized correctly.
-            current_family_uuids = {getattr(obj, "tagged_name", f"fallback_frameupdater_{i}") 
-                                    for i, obj in enumerate(self.vmobject.get_family())}
+        for uuid_str in all_uuids_to_process:
+            if uuid_str not in self.tracked_objects:
+                # This is a new UUID, initialize its history for previous frames with None
+                self.tracked_objects[uuid_str] = [None] * self.frame_index
             
-            all_potentially_relevant_uuids = set(self.tracked_objects.keys()).union(current_family_uuids)
-
-            for uuid_str in all_potentially_relevant_uuids:
-                if uuid_str not in self.tracked_objects: # New UUID from family, not in .txt, not seen before
-                    self.tracked_objects[uuid_str] = [None] * (self.frame_index + 1) # Init with None for all frames up to current
-                elif uuid_str not in mapped_uuids_in_current_frame:
-                    # Was tracked, or in family, but not in current frame's successful mapping.
-                    # Ensure list is padded to current_frame_index -1, then append None for current frame.
-                    if len(self.tracked_objects[uuid_str]) < self.frame_index:
-                        self.tracked_objects[uuid_str].extend([None] * (self.frame_index - len(self.tracked_objects[uuid_str])))
-                    if len(self.tracked_objects[uuid_str]) == self.frame_index: # Ready for current frame data
-                         self.tracked_objects[uuid_str].append(None)
+            history = self.tracked_objects[uuid_str]
+            
+            # Pad with None for any frames between its last known state and the current frame - 1
+            needed_padding = self.frame_index - len(history)
+            if needed_padding > 0:
+                history.extend([None] * needed_padding)
+            
+            # Append data for the current frame
+            # If UUID was in current SVG, add its data; otherwise, it's absent (None)
+            if uuid_str in current_frame_svg_data:
+                history.append(current_frame_svg_data[uuid_str])
+            else:
+                history.append(None)
 
         # Scene-wide metadata
         bg_rgba = color_to_int_rgba(self.scene.camera.background_color,

@@ -1,305 +1,274 @@
+"""forked_svg_refactored.py - Generate a single SVG with <path id="uuid"> tags
+
+Renders every `VMobject` in its own temporary SVG, adds the object's
+`tagged_name` as an `id` on the first `<path>`, then merges all those
+snippets into one master SVG.  This eliminates the brittle heuristic that
+tried to guess in advance whether a `VMobject` would end up painting anything.
+
+Only the public helpers `create_svg_from_vmobject` and
+`create_svg_from_vgroup` are meant to be called by user code.
+"""
 from __future__ import annotations
 
 import itertools as it
 import os
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterable, List
+from xml.etree import ElementTree as ET
 
 import cairo
 import numpy as np
-from manim import VGroup, VMobject
+from manim import VGroup, VMobject, config
 from manim.utils.family import extract_mobject_family_members
 
-CAIRO_LINE_WIDTH_MULTIPLE: float = 0.01
+__all__ = [
+    "create_svg_from_vmobject",
+    "create_svg_from_vgroup",
+]
 
-__all__ = ["create_svg_from_vmobject", "create_svg_from_vgroup"]
+###############################################################################
+# Cairo helpers
+###############################################################################
+
+CAIRO_LINE_WIDTH_MULTIPLE: float = 0.01
+SVG_NS = "http://www.w3.org/2000/svg"
+ET.register_namespace("", SVG_NS)  # Pretty‑print without the ugly ns0 prefix
+
+
+def _svg_tag(tag: str) -> str:
+    """Return a namespaced SVG tag for *ElementTree* comparisons."""
+    return f"{{{SVG_NS}}}{tag}"
 
 
 @contextmanager
-def _get_cairo_context(file_name: str | Path) -> cairo.Context:
-    from manim import config
+def _get_cairo_context(file_name: str | Path):
+    """Yield a Cairo *Context* that writes directly to *file_name* (SVG)."""
+    pw, ph = config.pixel_width, config.pixel_height
+    fw, fh = config.frame_width, config.frame_height
+    fc = [0, 0]  # frame centre offset – unused by manim as of 0.18
 
-    pw = config.pixel_width
-    ph = config.pixel_height
-    fw = config.frame_width
-    fh = config.frame_height
-    fc = [0, 0]
-    surface = cairo.SVGSurface(
-        file_name,
-        pw,
-        ph,
-    )
+    surface = cairo.SVGSurface(str(file_name), pw, ph)
     ctx = cairo.Context(surface)
+
+    # Match manim‑cairo coordinate system: unit square → render frame.
     ctx.scale(pw, ph)
     ctx.set_matrix(
         cairo.Matrix(
-            (pw / fw),
+            pw / fw,
             0,
             0,
             -(ph / fh),
             (pw / 2) - fc[0] * (pw / fw),
             (ph / 2) + fc[1] * (ph / fh),
-        ),
+        )
     )
-    yield ctx
-    surface.finish()
+    try:
+        yield ctx
+    finally:
+        surface.finish()
+
+
+###############################################################################
+# Basic drawing primitives (adapted from manim's *cairo_renderer.py*)
+###############################################################################
 
 
 def _transform_points_pre_display(points: np.ndarray) -> np.ndarray:
     if not np.all(np.isfinite(points)):
-        # TODO, print some kind of warning about
-        # mobject having invalid points?
-        points = np.zeros((1, 3))
+        return np.zeros((1, 3))
     return points
 
 
-def _get_stroke_rgbas(vmobject: VMobject, background: bool = False):
-    return vmobject.get_stroke_rgbas(background)
-
-
-def _set_cairo_context_color(
-    ctx: cairo.Context,
-    rgbas: np.ndarray,
-    vmobject: VMobject,
-):
+def _set_cairo_context_color(ctx: cairo.Context, rgbas: np.ndarray, vmobject: VMobject):
+    """Set *ctx*'s current colour or gradient fill from *rgbas*."""
     if len(rgbas) == 1:
-        # Use reversed rgb because cairo surface is
-        # encodes it in reverse order
         ctx.set_source_rgba(*rgbas[0])
-    else:
-        points = vmobject.get_gradient_start_and_end_points()
-        points = _transform_points_pre_display(points)
-        pat = cairo.LinearGradient(*it.chain(*(point[:2] for point in points)))
-        step = 1.0 / (len(rgbas) - 1)
-        offsets = np.arange(0, 1 + step, step)
-        for rgba, offset in zip(rgbas, offsets):
-            pat.add_color_stop_rgba(offset, *rgba)
-        ctx.set_source(pat)
+        return
+
+    points = vmobject.get_gradient_start_and_end_points()
+    points = _transform_points_pre_display(points)
+    pat = cairo.LinearGradient(*itertools.chain(*(p[:2] for p in points)))
+    step = 1.0 / (len(rgbas) - 1)
+    offsets = np.arange(0, 1 + step, step)
+    for rgba, offset in zip(rgbas, offsets):
+        pat.add_color_stop_rgba(offset, *rgba)
+    ctx.set_source(pat)
 
 
-def _apply_stroke(ctx: cairo.Context, vmobject: VMobject, background: bool = False):
-    from manim import config
-
-    width = vmobject.get_stroke_width(background)
+def _apply_stroke(ctx: cairo.Context, vm: VMobject, *, background: bool = False):
+    width = vm.get_stroke_width(background)
     if width == 0:
         return
-    _set_cairo_context_color(
-        ctx,
-        _get_stroke_rgbas(vmobject, background=background),
-        vmobject,
-    )
-    ctx.set_line_width(
-        width
-        * CAIRO_LINE_WIDTH_MULTIPLE
-        # This ensures lines have constant width as you zoom in on them.
-        * (config.frame_width / config.frame_width),
-    )
-    # if vmobject.joint_type != LineJointType.AUTO:
-    #     ctx.set_line_join(LINE_JOIN_MAP[vmobject.joint_type])
+
+    _set_cairo_context_color(ctx, vm.get_stroke_rgbas(background), vm)
+    ctx.set_line_width(width * CAIRO_LINE_WIDTH_MULTIPLE)
     ctx.stroke_preserve()
 
 
-def _apply_fill(ctx: cairo.Context, vmobject: VMobject):
-    """Fills the cairo context
-    Parameters
-    ----------
-    ctx
-        The cairo context
-    vmobject
-        The VMobject
-    Returns
-    -------
-    Camera
-        The camera object.
-    """
-    _set_cairo_context_color(
-        ctx,
-        vmobject.get_fill_rgbas(),
-        vmobject,
-    )
+def _apply_fill(ctx: cairo.Context, vm: VMobject):
+    _set_cairo_context_color(ctx, vm.get_fill_rgbas(), vm)
     ctx.fill_preserve()
-    return
-
-def _vm_is_drawable(vmobject: VMobject, ctx: cairo.Context) -> bool:
-    """
-    Fast fail predicate that mirrors every place in cairo-svg-surface.c
-    where a path is later discarded.  The goal is to avoid pushing any
-    path that cairo would eventually ignore, so our UUID mapping stays
-    stable.
-
-    Each numbered guard below names the exact cairo source routine that
-    performs (or relies on) the same test and explains why we match it
-    in Python first.  All file references are to cairo-svg-surface.c
-    from the current cairo tree unless otherwise stated.
-    """
-
-    # 1. No geometry at all
-    #    cairo path builder rejects an empty path in
-    #    _cairo_svg_surface_emit_path (function exits immediately if
-    #    the input path list is empty).
-    if vmobject.points.size == 0:
-        return False
-
-    # 2. Both stroke alpha and fill alpha are near zero
-    #    _cairo_svg_surface_emit_fill_style and
-    #    _cairo_svg_surface_emit_stroke_style write "stroke:none;fill:none;"
-    #    when alpha < 0.01 which paints nothing.
-    stroke_rgba = vmobject.get_stroke_rgbas()[0]
-    fill_rgba   = vmobject.get_fill_rgbas()[0]
-    if stroke_rgba[3] <= 0.01 and fill_rgba[3] <= 0.01:
-        return False
-
-    # 3. Stroke width collapses to zero after device transform
-    #    The number printed by _cairo_svg_surface_emit_stroke_style is
-    #    stroke_style->line_width after transformation.  If it is 0 the
-    #    SVG backend produces stroke-width:0 which shows nothing.
-    if stroke_rgba[3] > 0.01 and vmobject.stroke_width > 0.0:
-        dx, dy = ctx.user_to_device_distance(vmobject.stroke_width,
-                                             vmobject.stroke_width)
-        if max(abs(dx), abs(dy)) <= 1e-5:
-            return False
-
-    # 4. Degenerate path: every vertex is the same point
-    #    _cairo_path_fixed_is_box and later rasteriser treat zero area
-    #    shapes as empty.  We flag this before building any subpath.
-    if (vmobject.points.shape[0] == 1 or
-        (abs(vmobject.points - vmobject.points[0]).max() < 1e-7)):
-        return False
-
-    # 5. Dash pattern never paints even one segment
-    #    _cairo_path_fixed_dash_to_stroker drops the stroke if the first
-    #    dash gap already exceeds the full path length.
-    # if getattr(vmobject, "dash_pattern", None):
-    #     path_len = vmobject.get_total_length()       # manim helper
-    #     first_gap = vmobject.dash_pattern[0]
-    #     if path_len < first_gap:
-    #         return False
-
-    # 6. Current transform matrix has near zero determinant
-    #    _cairo_matrix_transform_bounding_box collapses the bounding box
-    #    which then makes _cairo_surface_clipper_set_clip treat the
-    #    region as empty.
-    m = ctx.get_matrix()
-    if abs(m.xx * m.yy - m.xy * m.yx) < 1e-12:
-        return False
-
-    # TODO: Reenable
-    # 7. Bounding box lies wholly outside the target surface
-    #    _cairo_surface_clipper_intersect_clip_path culls draws that
-    #    have no overlap with the surface extents.
-    # xmin, xmax, ymin, ymax = vmobject.get_boundary_point
-    # target = ctx.get_target()
-    # if xmax < 0 or xmin > target.width or ymax < 0 or ymin > target.height:
-    #     return False
-
-    # Every cairo discard condition has been checked.  The object will
-    # generate visible output.
-    return True
 
 
-def _create_svg_from_vmobject_internal(vmobject: VMobject, ctx: cairo.Context) -> str | None:
-    """
-    Processes a single VMobject to generate Cairo path commands and determines if it
-    results in a drawable entity for which a UUID should be recorded.
-    Returns the tagged_name (UUID string) if drawable, else None.
-    """
-    
-    is_drawable = True
-    
-    points = vmobject.points
-    points = _transform_points_pre_display(points)
-    
-    # Early breakouts. For example, if opacity is near 0 we don't want Cairo to even process the path.
-    # That way we have consistent "limits" for the uuid mapping.
- 
-    if not _vm_is_drawable(vmobject, ctx):
-        return None
+###############################################################################
+# Low‑level renderer: “draw exactly this VMobject on *ctx*”.
+###############################################################################
+
+
+def _draw_vmobject_on_context(vm: VMobject, ctx: cairo.Context) -> None:
+    """Render *vm* to *ctx* *exactly once* without heuristic pruning."""
+
+    points = _transform_points_pre_display(vm.points)
+    if points.size == 0:
+        return  # empty path – nothing to draw
 
     ctx.new_path()
-    subpaths = vmobject.gen_subpaths_from_points_2d(points)
-    for subpath in subpaths:
-        quads = vmobject.gen_cubic_bezier_tuples_from_points(subpath)
+    for subpath in vm.gen_subpaths_from_points_2d(points):
+        quads = vm.gen_cubic_bezier_tuples_from_points(subpath)
         ctx.new_sub_path()
-        start = subpath[0]
-        ctx.move_to(*start[:2])
+        ctx.move_to(*subpath[0][:2])
         for _p0, p1, p2, p3 in quads:
             ctx.curve_to(*p1[:2], *p2[:2], *p3[:2])
-        if vmobject.consider_points_equals_2d(subpath[0], subpath[-1]):
+        if vm.consider_points_equals_2d(subpath[0], subpath[-1]):
             ctx.close_path()
 
-    _apply_stroke(ctx, vmobject, background=True)
-    _apply_fill(ctx, vmobject)
-    _apply_stroke(ctx, vmobject) # Standard Manim second stroke
-
-    try:
-        if is_drawable:
-            uuid_str = str(vmobject.tagged_name)
-            return_uuid = uuid_str
-        else:
-            return_uuid = None
-    except AttributeError:
-        print(f"CRITICAL ERROR in SVG generation: VMobject of type {type(vmobject)} (hash: {hash(vmobject)}) is missing 'tagged_name'.")
-        return_uuid = None
-        
-    return return_uuid
+    # The *background* pass exists only so the two strokes match manim's
+    # typical GPU renderer.
+    _apply_stroke(ctx, vm, background=True)
+    _apply_fill(ctx, vm)
+    _apply_stroke(ctx, vm)
 
 
-def create_svg_from_vmobject(vmobject: VMobject, file_name: str | Path = None) -> Path:
-    """
-    Creates an SVG file from a single VMobject and its family.
-    This is mostly for standalone use or testing; create_svg_from_vgroup is used by HTMLParsedVMobject.
-    """
-    if file_name is None:
-        # Use a temporary file that persists; caller is responsible for cleanup if needed.
-        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp_file:
-            actual_file_name = Path(tmp_file.name)
-    else:
-        actual_file_name = Path(file_name).absolute()
-
-    with _get_cairo_context(actual_file_name) as ctx:
-        # Process the vmobject and all its sub-mobjects if it's a group
-        for mob in extract_mobject_family_members([vmobject], recurse=True, extract_families=True):
-            if isinstance(mob, VMobject): # Ensure we only process VMobjects
-                 _create_svg_from_vmobject_internal(mob, ctx)
-    return actual_file_name
+###############################################################################
+# SVG post‑processing helpers
+###############################################################################
 
 
-def create_svg_from_vgroup(vgroup: VGroup, file_name: str | Path = None) -> tuple[Path, Path]:
-    """
-    Creates an SVG file from a VGroup, and a corresponding .txt file listing the UUIDs
-    of VMobjects that resulted in a drawable path in the SVG.
+def _svg_contains_path(svg_root: ET.Element) -> bool:
+    """*True* if any <path> element exists in *svg_root*."""
+    return svg_root.find(f".//{_svg_tag('path')}") is not None
+
+
+def _add_id_to_first_path(svg_root: ET.Element, id_str: str) -> None:
+    """Add ``id=id_str`` to the **first** <path> element in *svg_root*."""
+    for elem in svg_root.iter(_svg_tag("path")):
+        elem.set("id", id_str)
+        break
+
+
+###############################################################################
+# Public API single VMobject -> SVG
+###############################################################################
+
+
+def create_svg_from_vmobject(vmobject: VMobject, file_name: str | Path | None = None) -> Path:
+    """Render *vmobject* to an SVG and return its *Path*.
+
+    Mostly a convenience wrapper for debugging; ``create_svg_from_vgroup`` is
+    what HTMLParsedVMobject and production code should call.
     """
     if file_name is None:
-        # Create a temporary SVG file that persists; HTMLParsedVMobject will manage its cleanup
-        # via its own TemporaryDirectory.
-        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp_svg_file_obj:
-            svg_file_path = Path(tmp_svg_file_obj.name)
+        tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
+        file_path = Path(tmp.name)
+        tmp.close()
     else:
-        svg_file_path = Path.cwd() / "temp" / Path(Path(file_name).name).with_suffix(".svg")
+        file_path = Path(file_name).expanduser().resolve()
+        file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    uuid_list_file_path = svg_file_path.with_suffix(".txt")
-    
-    os.makedirs(svg_file_path.parent, exist_ok=True)
+    with _get_cairo_context(file_path) as ctx:
+        _draw_vmobject_on_context(vmobject, ctx)
 
-    written_uuids: list[str] = []
+    # Optionally decorate the SVG with an id if something was drawn.
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    if _svg_contains_path(root):
+        _add_id_to_first_path(root, str(vmobject.tagged_name))
+        tree.write(file_path, encoding="utf-8", xml_declaration=True)
+    return file_path
 
-    with _get_cairo_context(svg_file_path) as ctx:
-        # Flatten the VGroup to get all individual VMobject components
-        flat_vmobjects = extract_mobject_family_members(vgroup, use_z_index=False, only_those_with_points=True)
-        
-        for vmobject_to_draw in flat_vmobjects:
-            if not isinstance(vmobject_to_draw, VMobject): # Safety check
+
+###############################################################################
+# Public API - VGroup -> master SVG
+###############################################################################
+
+
+def create_svg_from_vgroup(vgroup: VGroup, output_svg: str | Path | None = None) -> Path:
+    """Render *vgroup* (recursively) to a single SVG and return the path.
+
+    The function works in three phases:
+      1. Flatten *vgroup* into individual ``VMobject`` instances.
+      2. For each object, draw to its own temporary SVG, tag the first <path>
+         with the object's ``tagged_name``, and collect the *children* of the
+         temporary SVG root that actually contain geometry.
+      3. Stitch those children together under one master <svg> root.
+
+    The resulting file has no external manifest; UUIDs live inside the SVG.
+    """
+    # Where to save the final SVG.
+    if output_svg is None:
+        tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
+        master_svg_path = Path(tmp.name)
+        tmp.close()
+    else:
+        master_svg_path = Path(output_svg).expanduser().resolve()
+        master_svg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Gather all drawable VMobjects
+    flat_vmobjs: List[VMobject] = list(
+        extract_mobject_family_members(
+            vgroup,
+            only_those_with_points=True,
+        )
+    )
+
+    # Render each VMobject into its own SVG and collect the geometry.
+    collected_children: List[ET.Element] = []
+    defs_pool: List[ET.Element] = []
+
+    for vm in flat_vmobjs:
+        tmp_svg_path = create_svg_from_vmobject(vm)
+        tmp_root = ET.parse(tmp_svg_path).getroot()
+
+        if not _svg_contains_path(tmp_root):
+            tmp_svg_path.unlink(missing_ok=True)  # Discard empty placeholder
+            continue
+
+        # Extract <defs> once (manim writes gradients there).  Keep order but
+        # skip duplicates to avoid id clashes.
+        for d in tmp_root.findall(_svg_tag("defs")):
+            defs_pool.append(d)
+
+        # All *visible* nodes live at the top level after manim exports.  We
+        # therefore copy every *non‑defs* child verbatim.
+        for child in list(tmp_root):
+            if child.tag == _svg_tag("defs"):
                 continue
+            collected_children.append(child)
 
-            uuid = _create_svg_from_vmobject_internal(vmobject_to_draw, ctx)
-            if uuid is not None:
-                written_uuids.append(uuid)
-    
-    # Write the UUIDs to the .txt file
-    with open(uuid_list_file_path, "w") as f_uuids:
-        if written_uuids: # Avoid extra newline in empty file
-            f_uuids.write("\n".join(written_uuids))
-            f_uuids.write("\n") # Add a trailing newline for POSIX compatibility / easier parsing
+        tmp_svg_path.unlink(missing_ok=True)
 
-    return svg_file_path, uuid_list_file_path
+    # Build the master SVG document.
+    root = ET.Element(
+        _svg_tag("svg"),
+        {
+            "width": str(config.pixel_width),
+            "height": str(config.pixel_height),
+            "viewBox": f"0 0 {config.pixel_width} {config.pixel_height}",
+        },
+    )
+
+    if defs_pool:
+        defs_root = ET.SubElement(root, _svg_tag("defs"))
+        for d in defs_pool:
+            for elem in list(d):
+                defs_root.append(elem)
+
+    for child in collected_children:
+        root.append(child)
+
+    tree = ET.ElementTree(root)
+    tree.write(master_svg_path, encoding="utf-8", xml_declaration=True)
+    return master_svg_path
