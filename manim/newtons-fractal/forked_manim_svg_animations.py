@@ -1,10 +1,14 @@
 from manim import *
 from manim_mobject_svg import *
-from svgpathtools import svg2paths, parse_path
+from forked_svg import *
+from svgpathtools import parse_path
 import os
 import re
 import math
 import numpy as np
+import xml.etree.ElementTree as ET
+import tempfile
+from pathlib import Path
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -73,7 +77,8 @@ class HTMLParsedVMobject:
         self.js_path        = os.path.join("media", "svg_animations", self.basename + ".js")
 
         self.frame_index    = 0
-        self.frames_data: list[dict] = []           # collected frame metadata
+        self.tracked_objects: dict[str, list[dict | None]] = {}
+        self.scene_level_data: list[dict] = []
         self.collecting     = True
 
         self.orig_w         = scene.camera.frame_width
@@ -157,36 +162,109 @@ class HTMLParsedVMobject:
         if not self.collecting:
             return
 
-        tmp_svg = f"{self.basename}_{self.frame_index}.svg"
-        self.vmobject.to_svg(tmp_svg)                 # create snapshot file
-        _, attrs_list = svg2paths(tmp_svg)
-        os.remove(tmp_svg)
+        base_tmp_filename = f"{self.basename}_{self.frame_index}"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            svg_filepath, uuid_list_filepath = create_svg_from_vgroup(self.vmobject, str(base_tmp_filename))
 
-        # Build list of element attribute dictionaries for this frame
-        elem_attrs: list[dict] = []
-        for raw_attr in attrs_list:
-            entry = {}
-            if "d" in raw_attr:
-                path_def = str(raw_attr["d"])
-                circle = self._detect_circle(path_def)
-                if circle:
-                    cx, cy, r = circle
-                    entry["_shape"] = "circle"
-                    entry["cx"] = self._round_value("cx", str(cx))
-                    entry["cy"] = self._round_value("cy", str(cy))
-                    entry["r"]  = self._round_value("r",  str(r))
-                else:
-                    entry["_shape"] = "path"
-                    entry["d"] = self._round_value("d", path_def)
-            for k, v in raw_attr.items():
-                if k == "d":
-                    continue
-                entry[k] = self._round_value(k, str(v))
-            if "_shape" not in entry:
-                entry["_shape"] = "path"
-            elem_attrs.append(entry)
+            uuids_from_file: list[str] = []
+            if os.path.exists(uuid_list_filepath):
+                with open(uuid_list_filepath, 'r') as f_uuid_list:
+                    uuids_from_file = [line.strip() for line in f_uuid_list if line.strip()]
+            else:
+                print(f"ERROR: UUID list file {uuid_list_filepath} was not generated for frame {self.frame_index}. No SVG data can be reliably mapped for this frame.")
 
-        # scene-wide metadata
+            temp_parsed_svg_data_for_paths: list[dict] = [] # Holds parsed data for paths found in SVG
+            svg_paths_found_count = 0
+
+            try:
+                tree = ET.parse(svg_filepath)
+                root = tree.getroot()
+                ns_uri = "http://www.w3.org/2000/svg"
+                if root.tag.startswith("{"):
+                    end_brace_index = root.tag.find('}')
+                    if end_brace_index != -1:
+                        ns_uri = root.tag[1:end_brace_index]
+                ns = {"svg": ns_uri}
+                svg_path_elements = root.findall(".//svg:path", ns)
+                svg_paths_found_count = len(svg_path_elements)
+
+                for path_element in svg_path_elements:
+                    raw_attr = dict(path_element.attrib)
+                    entry = {}
+                    path_def = str(raw_attr.get("d", ""))
+                    circle_params = self._detect_circle(path_def)
+                    if circle_params:
+                        cx, cy, r = circle_params
+                        entry["_shape"] = "circle"
+                        entry["cx"] = self._round_value("cx", str(cx))
+                        entry["cy"] = self._round_value("cy", str(cy))
+                        entry["r"]  = self._round_value("r",  str(r))
+                    else:
+                        entry["_shape"] = "path"
+                        entry["d"] = self._round_value("d", path_def)
+                    for k, v in raw_attr.items():
+                        if k == "d":
+                            if entry["_shape"] == "path" and "d" not in entry:
+                                entry["d"] = self._round_value("d", path_def)
+                            continue
+                        entry[k] = self._round_value(k, str(v))
+                    temp_parsed_svg_data_for_paths.append(entry)
+
+            except (ET.ParseError, FileNotFoundError) as e:
+                print(f"Error parsing SVG {svg_filepath} for frame {self.frame_index}: {e}. No SVG data will be used.")
+                # temp_parsed_svg_data_for_paths remains empty, svg_paths_found_count is 0 or from len before error
+            
+            # Core data mapping logic:
+            # uuids_from_file is the source of truth for *rendered* elements this frame.
+            mapped_uuids_in_current_frame = set()
+
+            if uuids_from_file and len(uuids_from_file) == svg_paths_found_count:
+                print(f"Frame {self.frame_index}: Found {len(uuids_from_file)} UUIDs in file, {svg_paths_found_count} paths in SVG")
+                for i, uuid_str in enumerate(uuids_from_file):
+                    if uuid_str not in self.tracked_objects:
+                        # New UUID encountered via .txt file, ensure it's initialized for all previous frames with None
+                        self.tracked_objects[uuid_str] = [None] * self.frame_index
+                    elif len(self.tracked_objects[uuid_str]) < self.frame_index:
+                        # Existing UUID, but its history is shorter than expected (e.g. reappeared after absence)
+                        self.tracked_objects[uuid_str].extend([None] * (self.frame_index - len(self.tracked_objects[uuid_str])))
+                    
+                    # Append current frame's data
+                    self.tracked_objects[uuid_str].append(temp_parsed_svg_data_for_paths[i])
+                    mapped_uuids_in_current_frame.add(uuid_str)
+            elif uuids_from_file or svg_paths_found_count > 0: # Mismatch case
+                print(f"Frame {self.frame_index}: WARNING - Mismatch between UUIDs from file ({len(uuids_from_file)}) and SVG paths found ({svg_paths_found_count}). Attempting to copy data from previous frame for existing tracked objects.")
+                if self.frame_index > 0:
+                    for uuid_str_to_copy in self.tracked_objects.keys():
+                        # Ensure this UUID was present up to the previous frame.
+                        # Its list should have length self.frame_index (elements for frames 0 to frame_index-1)
+                        if len(self.tracked_objects[uuid_str_to_copy]) == self.frame_index:
+                            prev_data = self.tracked_objects[uuid_str_to_copy][self.frame_index - 1]
+                            self.tracked_objects[uuid_str_to_copy].append(prev_data) # Copy previous data for current frame
+                            # Mark as handled for this frame, regardless of whether prev_data was None or actual data.
+                            # This prevents the later block from appending another None if prev_data was None
+                            # and correctly reflects that this UUID's state for the current frame has been determined.
+                            mapped_uuids_in_current_frame.add(uuid_str_to_copy)
+                else: # self.frame_index == 0
+                    print(f"Frame {self.frame_index}: Mismatch on first frame (frame_index 0). Cannot copy previous data. Objects will be handled by subsequent logic.")
+            # For any UUID tracked previously (or part of current family) but not mapped in *this* frame, append None.
+            # Also ensures any new UUIDs from current family (if not in .txt) are initialized correctly.
+            current_family_uuids = {getattr(obj, "tagged_name", f"fallback_frameupdater_{i}") 
+                                    for i, obj in enumerate(self.vmobject.get_family())}
+            
+            all_potentially_relevant_uuids = set(self.tracked_objects.keys()).union(current_family_uuids)
+
+            for uuid_str in all_potentially_relevant_uuids:
+                if uuid_str not in self.tracked_objects: # New UUID from family, not in .txt, not seen before
+                    self.tracked_objects[uuid_str] = [None] * (self.frame_index + 1) # Init with None for all frames up to current
+                elif uuid_str not in mapped_uuids_in_current_frame:
+                    # Was tracked, or in family, but not in current frame's successful mapping.
+                    # Ensure list is padded to current_frame_index -1, then append None for current frame.
+                    if len(self.tracked_objects[uuid_str]) < self.frame_index:
+                        self.tracked_objects[uuid_str].extend([None] * (self.frame_index - len(self.tracked_objects[uuid_str])))
+                    if len(self.tracked_objects[uuid_str]) == self.frame_index: # Ready for current frame data
+                         self.tracked_objects[uuid_str].append(None)
+
+        # Scene-wide metadata
         bg_rgba = color_to_int_rgba(self.scene.camera.background_color,
                                     self.scene.camera.background_opacity)
         bg_rgba[-1] /= 255
@@ -199,11 +277,10 @@ class HTMLParsedVMobject:
             ph    = cam.pixel_height * cam.frame_height / self.orig_h
             top_l = cam.frame.get_corner(UL) * cam.pixel_width / self.orig_w
             center = top_l + cam.pixel_width / 2 * RIGHT + cam.pixel_height / 2 * DOWN
-            center[1] = -center[1]
+            center[1] = -center[1] # SVG Y is inverted
             viewbox = list(map(str, [*center[:2], pw, ph]))
 
-        self.frames_data.append({
-            "elements": elem_attrs,
+        self.scene_level_data.append({
             "bg": bg_str,
             "viewbox": viewbox
         })
@@ -238,125 +315,168 @@ class HTMLParsedVMobject:
         self.collecting = False
 
         svg_var = self.basename.lower()
+        all_uuids = list(self.tracked_objects.keys())
+        num_frames = self.frame_index
 
-        # Pre-scan frames to allocate fixed pools of <path>/<circle> elements
-        max_paths   = max((sum(e["_shape"] == "path"   for e in f["elements"])
-                           for f in self.frames_data), default=0)
-        max_circles = max((sum(e["_shape"] == "circle" for e in f["elements"])
-                           for f in self.frames_data), default=0)
+        if num_frames == 0 and not all_uuids:
+            print(f"Warning: No animation data collected for {self.basename}.")
+            os.makedirs(os.path.dirname(self.js_path), exist_ok=True)
+            # Corrected element_declarations formatting for empty case
+            empty_element_decls = "    const path_pool = [];\n    const circle_pool = [];"
+            empty_js_code = JS_WRAPPER.format(
+                svg_var=svg_var,
+                svg_id=self.basename,
+                element_declarations=empty_element_decls,
+                frames_array="const frames = [];",
+                scene_name=self.basename
+            )
+            with open(self.js_path, "w") as f_js:
+                f_js.write(empty_js_code)
+            with open(self.html_path, "w") as f_html:
+                f_html.write(self.html_markup)
+            return
 
-        # Declare JS handles for every pooled element
-        decls  = ["// path pool"]
-        decls += [f"let p_{i};" for i in range(max_paths)]
-        decls += ["// circle pool"]
-        decls += [f"let c_{i};" for i in range(max_circles)]
-        element_decls_js = "\n".join("    " + d for d in decls)
+        max_simultaneous_paths = 0
+        max_simultaneous_circles = 0
+        for i in range(num_frames):
+            paths_in_frame = 0
+            circles_in_frame = 0
+            for uuid in all_uuids:
+                if i < len(self.tracked_objects[uuid]):
+                    obj_data = self.tracked_objects[uuid][i]
+                    if obj_data:
+                        if obj_data.get("_shape") == "circle":
+                            circles_in_frame += 1
+                        else:
+                            paths_in_frame += 1
+            max_simultaneous_paths = max(max_simultaneous_paths, paths_in_frame)
+            max_simultaneous_circles = max(max_simultaneous_circles, circles_in_frame)
 
-        # Walk through frames, emit diff-only JS snippets
-        frame_bodies: list[str] = []
-        prev_path_attrs:   list[dict] = []
-        prev_circle_attrs: list[dict] = []
-        hidden_paths   = [False] * max_paths
-        hidden_circles = [False] * max_circles
-        prev_bg        = None
-        prev_viewbox   = None
+        py_path_pool_element_states = [{} for _ in range(max_simultaneous_paths)]
+        py_circle_pool_element_states = [{} for _ in range(max_simultaneous_circles)]
+        py_scene_bg_state = None
+        py_scene_viewbox_state = None
 
-        for idx, frame in enumerate(self.frames_data):
-            body_lines: list[str] = []
+        all_frames_js_code_blocks: list[list[str]] = []
 
-            # First frame: build the element pool once
-            if idx == 0:
-                body_lines.append(f"{svg_var}.replaceChildren();")
-                for i in range(max_paths):
-                    body_lines += [
-                        f"p_{i}=document.createElementNS('http://www.w3.org/2000/svg','path');",
-                        f"{svg_var}.appendChild(p_{i});"
-                    ]
-                for i in range(max_circles):
-                    body_lines += [
-                        f"c_{i}=document.createElementNS('http://www.w3.org/2000/svg','circle');",
-                        f"{svg_var}.appendChild(c_{i});"
-                    ]
+        # Corrected element_declarations formatting for the JS_WRAPPER
+        element_decls_js = (
+            "    const path_pool = [];\n"
+            "    const circle_pool = [];"
+        )
+        
+        initial_js_setup_commands = ["while (path_pool.length) { path_pool.pop(); }", "while (circle_pool.length) { circle_pool.pop(); }", f"{svg_var}.replaceChildren();"]
+        for i in range(max_simultaneous_paths):
+            initial_js_setup_commands.extend([
+                f"const p{i} = document.createElementNS('http://www.w3.org/2000/svg','path');",
+                f"{svg_var}.appendChild(p{i});",
+                f"path_pool.push(p{i});"
+            ])
+        for i in range(max_simultaneous_circles):
+            initial_js_setup_commands.extend([
+                f"const c{i} = document.createElementNS('http://www.w3.org/2000/svg','circle');",
+                f"{svg_var}.appendChild(c{i});",
+                f"circle_pool.push(c{i});"
+            ])
 
-            # Split current frame’s attributes into path/circle lists
-            paths_now   = [e for e in frame["elements"] if e["_shape"] == "path"]
-            circles_now = [e for e in frame["elements"] if e["_shape"] == "circle"]
+        for frame_idx in range(num_frames):
+            js_commands_for_this_frame: list[str] = []
+            if frame_idx == 0:
+                js_commands_for_this_frame.extend(initial_js_setup_commands)
 
-            # Diff path pool
-            for i in range(max_paths):
-                el_js = f"p_{i}"
-                if i < len(paths_now):
-                    cur = paths_now[i]
-                    prev = prev_path_attrs[i] if i < len(prev_path_attrs) else {}
+            path_pool_slot_idx = 0
+            circle_pool_slot_idx = 0
+            active_pooled_elements_this_frame = set()
 
-                    # set changed / new attributes
-                    for k, v in cur.items():
-                        if k == "_shape":
+            for uuid in all_uuids:
+                current_uuid_attrs = None
+                if frame_idx < len(self.tracked_objects[uuid]):
+                    current_uuid_attrs = self.tracked_objects[uuid][frame_idx]
+
+                if current_uuid_attrs:
+                    shape = current_uuid_attrs.get("_shape", "path")
+                    py_pool_state_list_ref = None
+                    js_element_name = ""
+                    assigned_slot = -1
+
+                    if shape == "path":
+                        if path_pool_slot_idx < max_simultaneous_paths:
+                            assigned_slot = path_pool_slot_idx
+                            js_element_name = f"path_pool[{assigned_slot}]"
+                            py_pool_state_list_ref = py_path_pool_element_states
+                            path_pool_slot_idx += 1
+                        else:
+                            print(f"Warning Frame {frame_idx}: Ran out of path pool slots for UUID {uuid}. Max: {max_simultaneous_paths}")
                             continue
-                        if prev.get(k) != v:
-                            v_esc = v.replace("\\", "\\\\").replace("'", "\\'")
-                            body_lines.append(f"{el_js}.setAttribute('{k}','{v_esc}');")
-
-                    # remove stale attributes
-                    for k in prev:
-                        if k not in cur and k != "_shape":
-                            body_lines.append(f"{el_js}.removeAttribute('{k}');")
-
-                    if hidden_paths[i]:
-                        body_lines.append(f"{el_js}.style.display='';")
-                        hidden_paths[i] = False
-                else:  # unused in this frame
-                    if not hidden_paths[i]:
-                        body_lines.append(f"{el_js}.style.display='none';")
-                        hidden_paths[i] = True
-
-            # Diff circle pool (same logic)
-            for i in range(max_circles):
-                el_js = f"c_{i}"
-                if i < len(circles_now):
-                    cur = circles_now[i]
-                    prev = prev_circle_attrs[i] if i < len(prev_circle_attrs) else {}
-                    for k, v in cur.items():
-                        if k == "_shape":
+                    else: # circle
+                        if circle_pool_slot_idx < max_simultaneous_circles:
+                            assigned_slot = circle_pool_slot_idx
+                            js_element_name = f"circle_pool[{assigned_slot}]"
+                            py_pool_state_list_ref = py_circle_pool_element_states
+                            circle_pool_slot_idx += 1
+                        else:
+                            print(f"Warning Frame {frame_idx}: Ran out of circle pool slots for UUID {uuid}. Max: {max_simultaneous_circles}")
                             continue
-                        if prev.get(k) != v:
-                            v_esc = v.replace("\\", "\\\\").replace("'", "\\'")
-                            body_lines.append(f"{el_js}.setAttribute('{k}','{v_esc}');")
-                    for k in prev:
-                        if k not in cur and k != "_shape":
-                            body_lines.append(f"{el_js}.removeAttribute('{k}');")
-                    if hidden_circles[i]:
-                        body_lines.append(f"{el_js}.style.display='';")
-                        hidden_circles[i] = False
-                else:
-                    if not hidden_circles[i]:
-                        body_lines.append(f"{el_js}.style.display='none';")
-                        hidden_circles[i] = True
+                    
+                    active_pooled_elements_this_frame.add((shape, assigned_slot))
+                    current_element_py_state = py_pool_state_list_ref[assigned_slot]
+                    attrs_to_set_in_js = {}
 
-            # Scene-level changes
-            if frame["bg"] != prev_bg:
-                body_lines.append(f"{svg_var}.style.backgroundColor='{frame['bg']}';")
-                prev_bg = frame["bg"]
+                    for k_attr, v_attr_actual in current_uuid_attrs.items():
+                        if k_attr == "_shape": continue
+                        v_attr_str = str(v_attr_actual)
+                        attrs_to_set_in_js[k_attr] = v_attr_str
+                        if current_element_py_state.get(k_attr) != v_attr_str:
+                            escaped_v = v_attr_str.replace("\\", "\\\\").replace("'", "\\'")
+                            js_commands_for_this_frame.append(f"{js_element_name}.setAttribute('{k_attr}', '{escaped_v}');")
+                            current_element_py_state[k_attr] = v_attr_str
 
-            if frame["viewbox"] != prev_viewbox:
-                if frame["viewbox"]:
-                    vb_str = " ".join(frame["viewbox"])
-                    body_lines.append(f"{svg_var}.setAttribute('viewBox','{vb_str}');")
-                prev_viewbox = frame["viewbox"]
+                    for k_attr_prev in list(current_element_py_state.keys()):
+                        if k_attr_prev not in attrs_to_set_in_js and k_attr_prev != "style.display":
+                            js_commands_for_this_frame.append(f"{js_element_name}.removeAttribute('{k_attr_prev}');")
+                            del current_element_py_state[k_attr_prev]
+                    
+                    if current_element_py_state.get("style.display") != "":
+                        js_commands_for_this_frame.append(f"{js_element_name}.style.display = '';")
+                        current_element_py_state["style.display"] = ""
+            
+            for slot_idx_path in range(max_simultaneous_paths):
+                if ("path", slot_idx_path) not in active_pooled_elements_this_frame:
+                    if py_path_pool_element_states[slot_idx_path].get("style.display") != "none":
+                        js_commands_for_this_frame.append(f"path_pool[{slot_idx_path}].style.display = 'none';")
+                        py_path_pool_element_states[slot_idx_path]["style.display"] = "none"
+            
+            for slot_idx_circle in range(max_simultaneous_circles):
+                if ("circle", slot_idx_circle) not in active_pooled_elements_this_frame:
+                    if py_circle_pool_element_states[slot_idx_circle].get("style.display") != "none":
+                        js_commands_for_this_frame.append(f"circle_pool[{slot_idx_circle}].style.display = 'none';")
+                        py_circle_pool_element_states[slot_idx_circle]["style.display"] = "none"
+            
+            if frame_idx < len(self.scene_level_data):
+                scene_data_this_frame = self.scene_level_data[frame_idx]
+                current_bg = scene_data_this_frame.get("bg")
+                if current_bg != py_scene_bg_state:
+                    js_commands_for_this_frame.append(f"{svg_var}.style.backgroundColor='{current_bg}';")
+                    py_scene_bg_state = current_bg
+                
+                current_viewbox = scene_data_this_frame.get("viewbox")
+                if current_viewbox != py_scene_viewbox_state:
+                    if current_viewbox:
+                        vb_str = " ".join(map(str, current_viewbox))
+                        js_commands_for_this_frame.append(f"{svg_var}.setAttribute('viewBox','{vb_str}');")
+                    else:
+                        js_commands_for_this_frame.append(f"{svg_var}.removeAttribute('viewBox');")
+                    py_scene_viewbox_state = current_viewbox
 
-            # Save JS body for this frame
-            frame_bodies.append("\n        ".join(body_lines) or "// no-op")
+            all_frames_js_code_blocks.append(js_commands_for_this_frame)
 
-            # Snapshot current attr lists for next diff
-            prev_path_attrs   = [dict(a) for a in paths_now]
-            prev_circle_attrs = [dict(a) for a in circles_now]
+        frame_function_bodies = []
+        for idx, body_commands in enumerate(all_frames_js_code_blocks):
+            indented_commands = "\n        ".join(body_commands)
+            frame_function_bodies.append(f"    () => {{\n        // Frame {idx}\n        {indented_commands}\n    }}")
+        
+        frames_array_js = "const frames = [\n" + ",\n".join(frame_function_bodies) + "\n];"
 
-        # Build JS array literal: one function per frame
-        frames_array_js = "const frames = [\n" + ",\n".join(
-            f"    () => {{\n        {body}\n    }}" for body in frame_bodies
-        ) + "\n];"
-
-        # Final JS file
         js_code = JS_WRAPPER.format(
             svg_var=svg_var,
             svg_id=self.basename,
