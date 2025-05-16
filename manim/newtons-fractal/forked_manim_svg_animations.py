@@ -498,15 +498,12 @@ class HTMLParsedVMobject:
         if not self.collecting:
             return
 
-        # Snapshot VMobject 
-        vm_copy = deepcopy(self.vmobject)
-
         # Decide filename now so we can order later.
         tmp_svg_path = os.path.join(os.getcwd(), "tempout", f"{self.basename}_{self.frame_index}.svg")
         self._svg_paths[self.frame_index] = tmp_svg_path
 
         # Serialize VMobject with cloudpickle so lambdas are handled.
-        vm_serialized: bytes = cloudpickle.dumps(vm_copy)
+        vm_serialized: bytes = cloudpickle.dumps(self.vmobject)
 
         # Queue for background export (only bytes – picklable by stdlib)
         self._batch.append((self.frame_index, vm_serialized, tmp_svg_path))
@@ -538,9 +535,9 @@ class HTMLParsedVMobject:
     @staticmethod
     def _worker(batch: List[Tuple[int, bytes, str]], cfg_bytes: bytes) -> None:  # child process
         """Render each VMobject (sent as *cloudpickle* bytes) to SVG - heavy Cairo work."""
-        import cloudpickle  # re-import inside subprocess (safe even if absent globally)
+        import cloudpickle
         # Apply main-process manim config first.
-        from manim import config as _mconf  # noqa: N812 – keep camel for parity with manim
+        from manim import config as _mconf  
 
         _cfg = cloudpickle.loads(cfg_bytes)
         _mconf.update(_cfg)
