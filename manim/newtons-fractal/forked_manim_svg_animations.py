@@ -49,6 +49,8 @@ algorithms are unchanged, but the *layout* is far more readable.
 
 from __future__ import annotations
 
+from copy import copy, deepcopy
+from multiprocessing import Process
 import os
 import re
 import math
@@ -66,6 +68,8 @@ from manim import *
 # Local sibling modules (no public changes)
 from manim_mobject_svg import *  # noqa: F401, pylint: disable=wildcard-import
 from forked_svg import create_svg_from_vgroup
+
+import cloudpickle  # for serialising lambda-containing VMobjects across processes
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -467,137 +471,175 @@ class HTMLParsedVMobject:
         self.scene_frames: List[_SceneFrameMeta] = []
         self.collecting = True
 
+        # Parallel machinery ----------------------------------------------------
+        # Each element: (frame_idx, tmp_svg_path) ; the VMobject copy itself is
+        # kept inside the task to keep _svg_paths tiny.
+        self._svg_paths: Dict[int, str] = {}
+        # Each batch entry: (frame_idx, vm_pickle_bytes, tmp_svg_path)
+        self._batch: List[Tuple[int, bytes, str]] = []
+        self._workers: List[Process] = []
+        self.batch_size = 50
+
         self.orig_w = scene.camera.frame_width
         self.orig_h = scene.camera.frame_height
+
+        # Snapshot the current manim configuration so that worker processes
+        # render with **exactly** the same pixel/frame size etc.  We only
+        # need a handful of numeric values – cloudpickle keeps it trivial.
+        from manim import config as _mconf  # local import to avoid cycle at top
+        self._cfg_bytes: bytes = cloudpickle.dumps(_mconf)
 
         self._write_html_shell()
         scene.add_updater(self._frame_updater)  # type: ignore[arg-type]
 
-    def _write_html_shell(self):
+    def _frame_updater(self, _dt: float) -> None:
+        if not self.collecting:
+            return
+
+        # Snapshot VMobject 
+        vm_copy = deepcopy(self.vmobject)
+
+        # Decide filename now so we can order later.
+        tmp_svg_path = os.path.join(os.getcwd(), "tempout", f"{self.basename}_{self.frame_index}.svg")
+        self._svg_paths[self.frame_index] = tmp_svg_path
+
+        # Serialise VMobject with cloudpickle so lambdas are handled.
+        vm_serialised: bytes = cloudpickle.dumps(vm_copy)
+
+        # Queue for background export (only bytes – picklable by stdlib)
+        self._batch.append((self.frame_index, vm_serialised, tmp_svg_path))
+        if len(self._batch) >= self.batch_size:
+            self._spawn_worker(self._batch)
+            self._batch = []
+
+        # Capture scene‑wide metadata.
         cam = self.scene.camera
         bg_rgba = color_to_int_rgba(cam.background_color, cam.background_opacity)
         bg_rgba[-1] /= 255
         bg_str = f"rgb({', '.join(map(str, bg_rgba))})"
-        html_body = SIMPLE_HTML_TEMPLATE if self.basic_html else HTML_TEMPLATE
-        self.html_markup = html_body.format(
-            title=self.basename,
-            svg_id=self.basename,
-            width=self.width,
-            w_px=cam.pixel_width,
-            h_px=cam.pixel_height,
-            bg=bg_str,
-            extra_body="",
-            js_file=os.path.basename(self.js_path)
-        )
-
-    def _frame_updater(self, dt: float):
-        """Called each render tick by Manim - serialize current VMobject to SVG."""
-        if not self.collecting:
-            return
-
-        base_tmp_filename = f"{self.basename}_{self.frame_index}"
-        current_frame_svg_data: Dict[str, Dict[str, str]] = {} # Stores {uuid: attribute_dict}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_svg_path = os.path.join(os.getcwd(), 'tempout', f"{base_tmp_filename}.svg")
-            svg_filepath_obj = create_svg_from_vgroup(self.vmobject, tmp_svg_path)
-
-            try:
-                tree = ET.parse(str(svg_filepath_obj))
-                root = tree.getroot()
-                ns_uri = "http://www.w3.org/2000/svg"
-                if root.tag.startswith("{"):
-                    end_brace_index = root.tag.find('}')
-                    if end_brace_index != -1:
-                        ns_uri = root.tag[1:end_brace_index]
-                ns = {"svg": ns_uri}
-
-                svg_path_elements_with_id = root.findall(".//svg:path[@id]", ns)
-
-                for path_element in svg_path_elements_with_id:
-                    uuid_str = path_element.get("id")
-                    if not uuid_str:
-                        print(f"ERROR: No UUID found for path element in frame {self.frame_index}. Skipping this object.")
-
-                    raw_attr = dict(path_element.attrib)
-                    entry: Dict[str, str] = {} 
-                    path_def = str(raw_attr.get("d", ""))
-
-                    circle_params = _detect_circle(path_def)
-                    if circle_params:
-                        cx, cy, r = circle_params
-                        entry["_shape"] = "circle"
-                        entry["cx"] = _round_value("cx", str(cx))
-                        entry["cy"] = _round_value("cy", str(cy))
-                        entry["r"]  = _round_value("r",  str(r))
-                    else:
-                        entry["_shape"] = "path"
-                        # The 'd' attribute itself will be processed in the loop below if it's a path
-
-                    for k, v_obj in raw_attr.items():
-                        v = str(v_obj)
-                        if k == "id":
-                            continue
-                        if k == "d":
-                            if entry["_shape"] == "path": # Only add 'd' attribute if it's a path
-                                entry["d"] = _round_value("d", v)
-                            # If shape is "circle", 'd' attribute is ignored (cx, cy, r are used)
-                            continue
-                        
-                        if entry["_shape"] == "circle" and k in ("cx", "cy", "r"):
-                            continue
-                        
-                        entry[k] = _round_value(k, v)
-                    
-                    current_frame_svg_data[uuid_str] = entry
-
-            except (ET.ParseError, FileNotFoundError) as e:
-                print(f"Error parsing SVG {str(svg_filepath_obj)} for frame {self.frame_index}: {e}. No objects will be processed from SVG for this frame.")
-                # current_frame_svg_data will remain empty or partially filled if error was mid-loop.
-            
-        # Update self.tracked_objects based on the data parsed from the current frame's SVG
-        all_uuids_to_process = set(self.tracked_objects.keys()).union(set(current_frame_svg_data.keys()))
-
-        for uuid_str in all_uuids_to_process:
-            if uuid_str not in self.tracked_objects:
-                # This is a new UUID, initialize its history for previous frames with None
-                self.tracked_objects[uuid_str] = [None] * self.frame_index
-            
-            history = self.tracked_objects[uuid_str]
-            
-            # Pad with None for any frames between its last known state and the current frame - 1
-            needed_padding = self.frame_index - len(history)
-            if needed_padding > 0:
-                history.extend([None] * needed_padding)
-            
-            # Append data for the current frame
-            # If UUID was in current SVG, add its data; otherwise, it's absent (None)
-            if uuid_str in current_frame_svg_data:
-                history.append(current_frame_svg_data[uuid_str])
-            else:
-                history.append(None)
-
-        # Scene-wide metadata
-        bg_rgba = color_to_int_rgba(self.scene.camera.background_color,
-                                    self.scene.camera.background_opacity)
-        bg_rgba[-1] /= 255
-        bg_str  = f"rgb({', '.join(map(str, bg_rgba))})"
 
         viewbox = None
         if isinstance(self.scene, MovingCameraScene):
-            cam   = self.scene.camera
-            pw    = cam.pixel_width  * cam.frame_width  / self.orig_w
-            ph    = cam.pixel_height * cam.frame_height / self.orig_h
+            pw = cam.pixel_width * cam.frame_width / self.orig_w
+            ph = cam.pixel_height * cam.frame_height / self.orig_h
             top_l = cam.frame.get_corner(UL) * cam.pixel_width / self.orig_w
             center = top_l + cam.pixel_width / 2 * RIGHT + cam.pixel_height / 2 * DOWN
-            center[1] = -center[1] # SVG Y is inverted
+            center[1] = -center[1]  # SVG Y is inverted
             viewbox = list(map(str, [*center[:2], pw, ph]))
 
-        self.scene_frames.append(_SceneFrameMeta(
-            bg=bg_str,
-            viewbox=viewbox
-        ))
+        self.scene_frames.append(_SceneFrameMeta(bg=bg_str, viewbox=viewbox))
+
+        # Advance frame counter.
         self.frame_index += 1
+
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _worker(batch: List[Tuple[int, bytes, str]], cfg_bytes: bytes) -> None:  # child process
+        """Render each VMobject (sent as *cloudpickle* bytes) to SVG – heavy Cairo work."""
+        import cloudpickle  # re-import inside subprocess (safe even if absent globally)
+        # Apply main-process manim config first.
+        from manim import config as _mconf  # noqa: N812 – keep camel for parity with manim
+
+        _cfg = cloudpickle.loads(cfg_bytes)
+        _mconf.update(_cfg)
+
+        # Lazy import of heavy SVG helper *after* config so it sees correct values
+        from forked_svg import create_svg_from_vgroup
+
+        for _idx, vm_bytes, path in batch:
+            try:
+                vm_copy = cloudpickle.loads(vm_bytes)
+            except Exception as exc:  # pragma: no cover – shouldn't happen
+                print(f"[worker] Failed to unpickle VMobject: {exc}")
+                continue
+
+            # The helper handles its own tempfiles etc.
+            create_svg_from_vgroup(vm_copy, path)
+
+    def _spawn_worker(self, batch: List[Tuple[int, bytes, str]]) -> None:
+        """Fork a *detached* process executing :py:meth:`_worker`."""
+        # Each worker gets its *own* copy of the batch list (pickle serialised).
+        p = Process(target=self._worker, args=(batch, self._cfg_bytes))
+        p.daemon = True  # die with parent even if we forget join()
+        p.start()
+        self._workers.append(p)
+    # -------------------------------------------------------------------------
+    # Original per‑frame SVG parsing logic – copied verbatim and put behind
+    # *_parse_frame* so that it can be called once all SVGs exist.
+    # -------------------------------------------------------------------------
+    def _parse_frame(self, frame_idx: int, svg_path: str) -> None:
+        current_frame_svg_data: Dict[str, Dict[str, str]] = {}
+
+        try:
+            tree = ET.parse(svg_path)
+            root = tree.getroot()
+            ns_uri = "http://www.w3.org/2000/svg"
+            if root.tag.startswith("{"):
+                end = root.tag.find("}")
+                if end != -1:
+                    ns_uri = root.tag[1:end]
+            ns = {"svg": ns_uri}
+
+            for path_element in root.findall(".//svg:path[@id]", ns):
+                uuid_str = path_element.get("id")
+                if not uuid_str:
+                    # Skip malformed element.
+                    continue
+
+                raw_attr = dict(path_element.attrib)
+                entry: Dict[str, str] = {}
+
+                # Shape detection
+                path_def = str(raw_attr.get("d", ""))
+                circle_params = _detect_circle(path_def)
+                if circle_params:
+                    cx, cy, r = circle_params
+                    entry.update({
+                        "_shape": "circle",
+                        "cx": _round_value("cx", str(cx)),
+                        "cy": _round_value("cy", str(cy)),
+                        "r": _round_value("r", str(r)),
+                    })
+                else:
+                    entry["_shape"] = "path"
+
+                # Attributes
+                for k, v_obj in raw_attr.items():
+                    if k == "id":
+                        continue
+                    v = str(v_obj)
+                    if k == "d":
+                        if entry["_shape"] == "path":
+                            entry["d"] = _round_value("d", v)
+                        continue
+                    if entry["_shape"] == "circle" and k in ("cx", "cy", "r"):
+                        continue
+                    entry[k] = _round_value(k, v)
+
+                current_frame_svg_data[uuid_str] = entry
+
+        except (ET.ParseError, FileNotFoundError) as exc:
+            print(f"[HTMLParsedVMobjectParallel] Failed to parse SVG for frame {frame_idx}: {exc}")
+            # Treat as blank frame.
+
+        # ------------------------------------------------------------------
+        # Update tracking dict – identical logic as original implementation.
+        # ------------------------------------------------------------------
+        all_uuids = set(self.tracked_objects.keys()).union(current_frame_svg_data.keys())
+        for uuid_str in all_uuids:
+            if uuid_str not in self.tracked_objects:
+                # New object – pad earlier frames with None.
+                self.tracked_objects[uuid_str] = [None] * frame_idx
+
+            history = self.tracked_objects[uuid_str]
+            # Ensure history length matches |frame_idx| (may have gaps if the
+            # object vanished for a few frames).
+            if len(history) < frame_idx:
+                history.extend([None] * (frame_idx - len(history)))
+
+            # Append this frame's data (or None if missing).
+            history.append(current_frame_svg_data.get(uuid_str))
+
 
     def finish(self):
         """Stop collection, run compilation pipeline, write .js / .html."""
@@ -606,6 +648,24 @@ class HTMLParsedVMobject:
             self.scene.remove_updater(self._frame_updater)  # type: ignore[arg-type]
             self.collecting = False
         num_frames = self.frame_index
+        
+        #-------------------------------------------------------------------------
+        # Block until every worker has completed, then post‑process frames.
+        # Flush leftovers < BATCH_SIZE.
+        if self._batch:
+            self._spawn_worker(self._batch)
+            self._batch = []
+
+        # Wait for all workers.
+        for p in self._workers:
+            p.join()
+
+        # Sequentially parse SVGs to populate tracking structures.
+        total_frames = self.frame_index  # already incremented in updater
+        for idx in range(total_frames):
+            svg_path = self._svg_paths[idx]
+            self._parse_frame(idx, svg_path)
+        #-------------------------------------------------------------------------
 
         # Early out if nothing happened at all
         if num_frames == 0 or not self.tracked_objects:
@@ -661,3 +721,19 @@ class HTMLParsedVMobject:
         with open(self.html_path, "w", encoding="utf-8") as f_html:
             f_html.write(self.html_markup)
 
+    def _write_html_shell(self):
+        cam = self.scene.camera
+        bg_rgba = color_to_int_rgba(cam.background_color, cam.background_opacity)
+        bg_rgba[-1] /= 255
+        bg_str = f"rgb({', '.join(map(str, bg_rgba))})"
+        html_body = SIMPLE_HTML_TEMPLATE if self.basic_html else HTML_TEMPLATE
+        self.html_markup = html_body.format(
+            title=self.basename,
+            svg_id=self.basename,
+            width=self.width,
+            w_px=cam.pixel_width,
+            h_px=cam.pixel_height,
+            bg=bg_str,
+            extra_body="",
+            js_file=os.path.basename(self.js_path)
+        )
