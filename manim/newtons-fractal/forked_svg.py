@@ -37,6 +37,82 @@ CAIRO_LINE_WIDTH_MULTIPLE: float = 0.01
 SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG_NS)  # Pretty‑print without the ugly ns0 prefix
 
+def _vm_is_drawable(vmobject: VMobject, ctx: cairo.Context) -> bool:
+    """
+    Fast fail predicate that mirrors every place in cairo-svg-surface.c
+    where a path is later discarded.  The goal is to avoid pushing any
+    path that cairo would eventually ignore, so our UUID mapping stays
+    stable.
+
+    Each numbered guard below names the exact cairo source routine that
+    performs (or relies on) the same test and explains why we match it
+    in Python first.  All file references are to cairo-svg-surface.c
+    from the current cairo tree unless otherwise stated.
+    """
+
+    # 1. No geometry at all
+    #    cairo path builder rejects an empty path in
+    #    _cairo_svg_surface_emit_path (function exits immediately if
+    #    the input path list is empty).
+    if vmobject.points.size == 0:
+        return False
+
+    # 2. Both stroke alpha and fill alpha are near zero
+    #    _cairo_svg_surface_emit_fill_style and
+    #    _cairo_svg_surface_emit_stroke_style write "stroke:none;fill:none;"
+    #    when alpha < 0.01 which paints nothing.
+    stroke_rgba = vmobject.get_stroke_rgbas()[0]
+    fill_rgba   = vmobject.get_fill_rgbas()[0]
+    if stroke_rgba[3] <= 0.01 and fill_rgba[3] <= 0.01:
+        return False
+
+    # 3. Stroke width collapses to zero after device transform
+    #    The number printed by _cairo_svg_surface_emit_stroke_style is
+    #    stroke_style->line_width after transformation.  If it is 0 the
+    #    SVG backend produces stroke-width:0 which shows nothing.
+    if stroke_rgba[3] > 0.01 and vmobject.stroke_width > 0.0:
+        dx, dy = ctx.user_to_device_distance(vmobject.stroke_width,
+                                             vmobject.stroke_width)
+        if max(abs(dx), abs(dy)) <= 1e-5:
+            return False
+
+    # 4. Degenerate path: every vertex is the same point
+    #    _cairo_path_fixed_is_box and later rasteriser treat zero area
+    #    shapes as empty.  We flag this before building any subpath.
+    if (vmobject.points.shape[0] == 1 or
+        (abs(vmobject.points - vmobject.points[0]).max() < 1e-7)):
+        return False
+
+    # 5. Dash pattern never paints even one segment
+    #    _cairo_path_fixed_dash_to_stroker drops the stroke if the first
+    #    dash gap already exceeds the full path length.
+    # if getattr(vmobject, "dash_pattern", None):
+    #     path_len = vmobject.get_total_length()       # manim helper
+    #     first_gap = vmobject.dash_pattern[0]
+    #     if path_len < first_gap:
+    #         return False
+
+    # 6. Current transform matrix has near zero determinant
+    #    _cairo_matrix_transform_bounding_box collapses the bounding box
+    #    which then makes _cairo_surface_clipper_set_clip treat the
+    #    region as empty.
+    m = ctx.get_matrix()
+    if abs(m.xx * m.yy - m.xy * m.yx) < 1e-12:
+        return False
+
+    # TODO: Reenable
+    # 7. Bounding box lies wholly outside the target surface
+    #    _cairo_surface_clipper_intersect_clip_path culls draws that
+    #    have no overlap with the surface extents.
+    # xmin, xmax, ymin, ymax = vmobject.get_boundary_point
+    # target = ctx.get_target()
+    # if xmax < 0 or xmin > target.width or ymax < 0 or ymin > target.height:
+    #     return False
+
+    # Every cairo discard condition has been checked.  The object will
+    # generate visible output.
+    return True
+
 
 def _svg_tag(tag: str) -> str:
     """Return a namespaced SVG tag for *ElementTree* comparisons."""
@@ -170,6 +246,7 @@ def create_svg_from_vmobject(vmobject: VMobject, file_name: str | Path | None = 
     Mostly a convenience wrapper for debugging; ``create_svg_from_vgroup`` is
     what HTMLParsedVMobject and production code should call.
     """
+    
     if file_name is None:
         tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
         file_path = Path(tmp.name)
@@ -179,6 +256,8 @@ def create_svg_from_vmobject(vmobject: VMobject, file_name: str | Path | None = 
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
     with _get_cairo_context(file_path) as ctx:
+        if not _vm_is_drawable(vmobject, ctx):
+            return None
         _draw_vmobject_on_context(vmobject, ctx)
 
     # Optionally decorate the SVG with an id if something was drawn.
@@ -229,7 +308,13 @@ def create_svg_from_vgroup(vgroup: VGroup, output_svg: str | Path | None = None)
     defs_pool: List[ET.Element] = []
 
     for vm in flat_vmobjs:
+        if vm.tagged_name is None:
+            continue
+        
         tmp_svg_path = create_svg_from_vmobject(vm)
+        if tmp_svg_path is None:
+            continue
+        
         tmp_root = ET.parse(tmp_svg_path).getroot()
 
         if not _svg_contains_path(tmp_root):

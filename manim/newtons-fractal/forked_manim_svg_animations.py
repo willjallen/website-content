@@ -97,7 +97,7 @@ const {svg_var} = document.getElementById(\"{svg_id}\");
 {frames_array}
 
 // Kick-off entry point (called from HTML or user code)
-let TARGET_DT = 100;   // ms between logical frames
+let TARGET_DT = 16;   // ms between logical frames
 
 function render{scene_name}() {{
     if (playing) return;          // prevent overlapping playbacks
@@ -381,7 +381,7 @@ class _JSFrameBuilder:
                 else:  # circle
                     if uuid not in circle_slot_map:
                         if not free_circle_slots:
-                            raise RuntimeError("No free circle slot available – max_circles mis-computed? ")
+                            raise RuntimeError("No free circle slot available - max_circles mis-computed? ")
                         circle_slot_map[uuid] = free_circle_slots.pop(0)
                     slot = circle_slot_map[uuid]
                     js_elem = f"circle_pool[{slot}]"
@@ -457,6 +457,8 @@ class HTMLParsedVMobject:
         self.scene = scene
         self.width = width
         self.basic_html = basic_html
+        
+        self.debug = False
 
         self.basename = scene.__class__.__name__
         self.html_path = os.path.join("media", "svg_animations", self.basename + ".html")
@@ -478,7 +480,7 @@ class HTMLParsedVMobject:
         # Each batch entry: (frame_idx, vm_pickle_bytes, tmp_svg_path)
         self._batch: List[Tuple[int, bytes, str]] = []
         self._workers: List[Process] = []
-        self.batch_size = 50
+        self.batch_size = 25
 
         self.orig_w = scene.camera.frame_width
         self.orig_h = scene.camera.frame_height
@@ -606,7 +608,8 @@ class HTMLParsedVMobject:
                 # Attributes
                 for k, v_obj in raw_attr.items():
                     if k == "id":
-                        continue
+                        if self.debug:
+                            entry["id"] = v_obj
                     v = str(v_obj)
                     if k == "d":
                         if entry["_shape"] == "path":

@@ -1,15 +1,25 @@
+from multiprocessing import freeze_support
 from typing import List
 import uuid
 from manim import *
 from forked_manim_svg_animations import *
+from manim.utils.family import extract_mobject_family_members
 
-def vg_add_tagged(vg: VGroup, args: List[Mobject], debug_name: str = None):
-    for a in args:
-        for child in a.get_family():
+def vg_add_tagged(vg: VGroup, mobjects: List[Mobject], debug_name: str = None):
+
+    for mobject in mobjects:
+        if not isinstance(mobject, Mobject):
+            continue
+        mobject.tagged_name = uuid.uuid4()
+        child_mobjects = extract_mobject_family_members(
+            mobject,
+            only_those_with_points=True,
+        )
+        for child in child_mobjects:
             child.tagged_name = uuid.uuid4()
             if debug_name is not None:
                 child.debug_name = debug_name
-            vg.add(child)
+        vg.add(mobject)
 
 # 1 
 # Just the quintic graph
@@ -276,7 +286,7 @@ class Figure5(Scene):
         
         self.play(Create(x_n_text))
         
-        for n in range(2, 6):
+        for n in range(2, 5):
             
             x_point = Dot(ax.coords_to_point(x_n, 0), color=RED)
             line = ax.get_vertical_line(ax.coords_to_point(x_n, f(x_n)))
@@ -333,11 +343,8 @@ class Figure5(Scene):
                 vg_add_tagged(self.vg, [zoom_out_square])
                 self.play(Create(zoom_out_square))
                 
-                # Store old mobjects that will be transformed
                 old_ax = ax
                 old_fx_graph = fx_graph
-                # x_n_manim_arr contains x0, x1, x2, x3 dots. All need to be transformed.
-                # fx_arr contains f(x0), f(x1), f(x2) dots. All need to be transformed.
 
                 new_ax = Axes(
                     x_range=[1.1, 1.3, 0.1],
@@ -347,8 +354,6 @@ class Figure5(Scene):
                 )
                 new_fx_graph = new_ax.plot(f, x_range=[1.1, 1.3], use_smoothing=True)
                 
-                vg_add_tagged(self.vg, [new_ax, new_fx_graph])
-
                 new_x_n_dots_for_vg = []
                 x_n_transforms = []
                 for i in range(len(x_n_arr)): # x_n_arr has x0,x1,x2,x3
@@ -369,15 +374,7 @@ class Figure5(Scene):
                     vg_add_tagged(self.vg, [new_dot])
                     fx_transforms.append(ReplacementTransform(old_dot, new_dot))
                     
-                # Fade out labels for x1, x2 as they might clutter zoomed view
-                # text_arr contains labels for x1 (index 0) and x2 (index 1)
-                if len(text_arr) >= 2: # Ensure elements exist before trying to fade
-                    self.play(FadeOut(text_arr[0]), FadeOut(text_arr[1]))
-                    self.vg.remove(text_arr[0], text_arr[1])
-                elif len(text_arr) == 1:
-                    self.play(FadeOut(text_arr[0]))
-                    self.vg.remove(text_arr[0])
-                    
+                
                 self.play(
                     ReplacementTransform(old_ax, new_ax), 
                     ReplacementTransform(old_fx_graph, new_fx_graph), 
@@ -385,9 +382,8 @@ class Figure5(Scene):
                     *x_n_transforms, 
                     *fx_transforms
                 )
+                self.vg.remove(zoom_out_square)
                 
-                # Remove old mobjects from VGroup AFTER they've been transformed away
-                self.vg.remove(old_ax, old_fx_graph)
                 for dot in x_n_manim_arr: # These are the original dots
                     self.vg.remove(dot)
                 for dot in fx_arr: # These are the original dots
@@ -399,12 +395,24 @@ class Figure5(Scene):
                 x_n_manim_arr = new_x_n_dots_for_vg
                 fx_arr = new_fx_dots_for_vg
         
-        self.wait()
         parsed.finish()
-
-with tempconfig({"quality": "low_quality", "disable_caching": True, "frame_rate": 30, "dry_run": True}):
-    scene = Figure5()
-    scene.render()
+        
+if __name__ == "__main__":
+    freeze_support()
+    with tempconfig(
+        {
+            "quality": "low_quality",
+            "disable_caching": True,
+            "frame_rate": 30,
+            "dry_run": True,
+            "pixel_height": 2160,
+            "pixel_width": 3840,
+            "background_color": BLACK,
+            "background_opacity": 1
+        }
+    ):
+        scene = Figure5()
+        scene.render()
 
 # 6
 # New function
