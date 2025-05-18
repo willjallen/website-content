@@ -397,22 +397,6 @@ class Figure5(Scene):
         
         parsed.finish()
         
-if __name__ == "__main__":
-    freeze_support()
-    with tempconfig(
-        {
-            "quality": "low_quality",
-            "disable_caching": True,
-            "frame_rate": 30,
-            "dry_run": True,
-            "pixel_height": 2160,
-            "pixel_width": 3840,
-            "background_color": BLACK,
-            "background_opacity": 1
-        }
-    ):
-        scene = Figure5()
-        scene.render()
 
 # 6
 # New function
@@ -658,23 +642,23 @@ class Figure10(Scene):
         plane = ComplexPlane(x_range=x_range_graph, y_range=y_range_graph).add_coordinates().scale(2)
         self.add(plane)
         
-        vg = VGroup(plane) # Initialize VGroup with the plane
+        vg = VGroup() 
+        vg_add_tagged(vg, [plane])
+        
         parsed = HTMLParsedVMobject(vg, self)
 
         dots = []
-        # dots_trajectory = [] # This is unused
         
         for x in np.arange(-2, 2, 0.05):
             for y in np.arange(-2, 2, 0.05):
                 dot = Dot(plane.n2p(complex(x,y)), color=YELLOW, radius=0.01) 
                 self.add(dot) 
-                vg.add(dot)
                 dots.append(dot)
                 
                 dot.generate_target()
                 dot.target.move_to(plane.n2p((complex(x,y) ** 3) - 1))
 
-        
+        vg_add_tagged(vg, dots)
         animations = tuple(MoveToTarget(x, run_time=5) for x in dots)
 
         self.play(*animations)
@@ -831,3 +815,21 @@ class Figure13(Scene):
             
         self.play(Wait(run_time=2))
         parsed.finish()
+
+
+if __name__ == "__main__":
+    freeze_support()
+    with tempconfig(
+        {
+            "quality": "low_quality",
+            "disable_caching": True,
+            "frame_rate": 30,
+            "dry_run": True,
+            "pixel_height": 2160,
+            "pixel_width": 3840,
+            "background_color": BLACK,
+            "background_opacity": 1
+        }
+    ):
+        scene = Figure10()
+        scene.render()
