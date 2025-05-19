@@ -10,6 +10,7 @@ Only the public helpers `create_svg_from_vmobject` and
 """
 from __future__ import annotations
 
+import itertools
 import itertools as it
 import os
 import tempfile
@@ -216,6 +217,7 @@ def _draw_vmobject_on_context(vm: VMobject, ctx: cairo.Context) -> None:
     _apply_stroke(ctx, vm, background=True)
     _apply_fill(ctx, vm)
     _apply_stroke(ctx, vm)
+
 
 
 ###############################################################################

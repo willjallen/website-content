@@ -2,6 +2,8 @@ media/
 temp/
 tempout/
 
+out.dat
+
 # General
 .DS_Store
 .AppleDouble

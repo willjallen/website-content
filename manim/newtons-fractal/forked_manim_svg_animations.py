@@ -68,6 +68,7 @@ from manim import *
 # Local sibling modules (no public changes)
 from manim_mobject_svg import *  # noqa: F401, pylint: disable=wildcard-import
 from forked_svg import create_svg_from_vgroup
+from data_exporter import ManimDataExporter
 
 import cloudpickle  # for serializing lambda-containing VMobjects across processes
 
@@ -458,6 +459,8 @@ class HTMLParsedVMobject:
         self.width = width
         self.basic_html = basic_html
         
+        self.data_exporter = ManimDataExporter(os.path.join(os.getcwd(), 'out.dat'))
+        
         self.debug = False
 
         self.basename = scene.__class__.__name__
@@ -497,6 +500,9 @@ class HTMLParsedVMobject:
     def _frame_updater(self, _dt: float) -> None:
         if not self.collecting:
             return
+        
+        self.data_exporter.export_frame(self.vmobject, self.frame_index)
+        return
 
         # Decide filename now so we can order later.
         tmp_svg_path = os.path.join(os.getcwd(), "tempout", f"{self.basename}_{self.frame_index}.svg")
@@ -642,6 +648,7 @@ class HTMLParsedVMobject:
 
 
     def finish(self):
+        return
         """Stop collection, run compilation pipeline, write .js / .html."""
         # Freeze data collection
         if self.collecting:
