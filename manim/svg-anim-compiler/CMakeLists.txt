@@ -1,24 +1,33 @@
-﻿cmake_minimum_required(VERSION 3.00)
+﻿cmake_minimum_required(VERSION 3.16)
+
 project(svgAnimCompiler LANGUAGES C)
 
-## Find math and pthread library
-#find_library(MATH m REQUIRED)
-#
-## Create HEADER-ONLY library
-#add_library(HEADER-ONLY INTERFACE)
-## Add project lib
-#add_library(PROJECTLIB INTERFACE)
-## Add directory "include/" to target library
-#target_include_directories(HEADER-ONLY INTERFACE ${CMAKE_SOURCE_DIR}/include)
-## Add directory "lib/" to target library
-#target_include_directories(PROJECTLIB INTERFACE ${CMAKE_SOURCE_DIR}/lib)
-#
-## Target link math to HEADER-ONLY
-#target_link_libraries(HEADER-ONLY INTERFACE ${MATH})
-## Target link HEADER-ONLY to PROJECTLIB
-#target_link_libraries(HEADER-ONLY INTERFACE PROJECTLIB)
-#
-# Create a binary executable
-add_executable(main main.c)
-# Link shared library to main
-#target_link_libraries(main PRIVATE HEADER-ONLY)
+add_executable(svgAnimCompiler main.c)
+
+
+if(MSVC)
+    target_compile_options(svgAnimCompiler PRIVATE
+            /W4            # highest warning level
+            /WX            # warnings as errors
+            /permissive-   # stricter standard conformance
+    )
+else()  # GCC / Clang
+    target_compile_options(svgAnimCompiler PRIVATE
+            -Wall -Wextra -Wpedantic -Werror
+    )
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+   target_compile_options(${TARGET_NAME} PRIVATE /Zi)
+
+   # Tell linker to include symbol data
+    set_target_properties(${TARGET_NAME} PROPERTIES 
+        LINK_FLAGS "/INCREMENTAL:NO /DEBUG /OPT:REF /OPT:ICF"
+    )
+
+    # Set file name & location
+    set_target_properties(${TARGET_NAME} PROPERTIES 
+        COMPILE_PDB_NAME ${TARGET_NAME} 
+        COMPILE_PDB_OUTPUT_DIR ${CMAKE_BINARY_DIR}
+    )
+endif()

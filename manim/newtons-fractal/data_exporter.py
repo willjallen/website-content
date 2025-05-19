@@ -68,6 +68,8 @@ class ManimDataExporter:
         _subpaths_count = len(subpaths)
 
         self._write(mgc, b'VMOB')
+        self._write(u32, vmo.tagged_name)
+        print(vmo.tagged_name)
         # Style
         self._write(f32, _stroke_width_background)
         self._write(f32, _stroke_width)
@@ -78,12 +80,15 @@ class ManimDataExporter:
         self._write(u32, _subpaths_count)
 
         for _rgba in stroke_RGBAs_background:
+            self._write(mgc, b'RGBA')
             self._write(f32 + f32 + f32 + f32, *_rgba)
 
         for _rgba in stroke_RGBAs:
+            self._write(mgc, b'RGBA')
             self._write(f32 + f32 + f32 + f32, *_rgba)
 
         for _rgba in fill_RGBAs:
+            self._write(mgc, b'RGBA')
             self._write(f32 + f32 + f32 + f32, *_rgba)
 
         # ctx.new_path()

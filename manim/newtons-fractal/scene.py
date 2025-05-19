@@ -5,18 +5,22 @@ from manim import *
 from forked_manim_svg_animations import *
 from manim.utils.family import extract_mobject_family_members
 
+counter = 0
 def vg_add_tagged(vg: VGroup, mobjects: List[Mobject], debug_name: str = None):
-
+    
+    global counter
     for mobject in mobjects:
         if not isinstance(mobject, Mobject):
             continue
-        mobject.tagged_name = uuid.uuid4()
+        mobject.tagged_name = counter
+        counter += 1
         child_mobjects = extract_mobject_family_members(
             mobject,
             only_those_with_points=True,
         )
         for child in child_mobjects:
-            child.tagged_name = uuid.uuid4()
+            child.tagged_name = counter
+            counter += 1
             if debug_name is not None:
                 child.debug_name = debug_name
         vg.add(mobject)
@@ -831,5 +835,5 @@ if __name__ == "__main__":
             "background_opacity": 1
         }
     ):
-        scene = Figure10()
+        scene = Figure5()
         scene.render()
