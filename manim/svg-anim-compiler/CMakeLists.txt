@@ -1,9 +1,82 @@
-﻿cmake_minimum_required(VERSION 3.16)
+﻿cmake_minimum_required(VERSION 3.31)
 
 project(svgAnimCompiler LANGUAGES C)
 
 add_executable(svgAnimCompiler main.c)
 
+
+# -----------------------------------------------------------------------------
+#  Cairo
+# -----------------------------------------------------------------------------
+include(FetchContent)
+include(ExternalProject)
+find_package(PkgConfig QUIET)
+
+option(USE_SYSTEM_CAIRO "Prefer a cairo already on the system" ON)
+
+if(USE_SYSTEM_CAIRO AND PKG_CONFIG_FOUND)
+    pkg_check_modules(CAIRO QUIET cairo)
+endif()
+
+# On Windows, try vcpkg’s CMake config before giving up
+if(NOT CAIRO_FOUND AND WIN32)
+    find_package(cairo CONFIG QUIET)
+    if(TARGET cairo::cairo)
+        set(CAIRO_FOUND TRUE)
+    endif()
+endif()
+
+if(NOT CAIRO_FOUND)
+    message(STATUS "cairo not found, building from source (Meson)")
+
+    set(_cairo_install ${CMAKE_BINARY_DIR}/cairo-install)
+
+    file(MAKE_DIRECTORY
+        ${_cairo_install}/include
+        ${_cairo_install}/include/cairo
+        ${_cairo_install}/lib)
+
+    set(_cairo_src   ${CMAKE_BINARY_DIR}/cairo_ep-src)
+    set(_cairo_build ${CMAKE_BINARY_DIR}/cairo_ep-build)
+
+    ExternalProject_Add(cairo_ep
+        GIT_REPOSITORY https://gitlab.freedesktop.org/cairo/cairo.git
+        GIT_TAG        1.18.0
+        UPDATE_COMMAND ""
+        SOURCE_DIR     ${_cairo_src}
+        BINARY_DIR     ${_cairo_build}
+
+        CONFIGURE_COMMAND
+            meson setup ${_cairo_src} ${_cairo_build}
+                        --prefix ${_cairo_install}
+                        -Ddefault_library=shared
+                        -Dbuildtype=release
+
+        BUILD_COMMAND     meson compile  -C ${_cairo_build}
+        INSTALL_COMMAND   meson install  -C ${_cairo_build}
+
+        BUILD_BYPRODUCTS
+            ${_cairo_install}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}cairo${CMAKE_STATIC_LIBRARY_SUFFIX}
+    )
+
+    add_library(cairo::cairo STATIC IMPORTED GLOBAL)
+set_target_properties(cairo::cairo PROPERTIES
+    IMPORTED_IMPLIB "${_cairo_install}/lib/libcairo.dll.a"  # stub for linker
+    IMPORTED_LOCATION "${_cairo_install}/bin/libcairo-2.dll" # the real DLL
+    INTERFACE_INCLUDE_DIRECTORIES "${_cairo_install}/include/cairo"
+)
+    add_dependencies(cairo::cairo cairo_ep)
+
+
+
+endif()
+
+target_link_libraries(svgAnimCompiler PRIVATE cairo::cairo)
+
+
+# -----------------------------------------------------------------------------
+#  Warnings
+# -----------------------------------------------------------------------------
 
 if(MSVC)
     target_compile_options(svgAnimCompiler PRIVATE
@@ -16,6 +89,10 @@ else()  # GCC / Clang
             -Wall -Wextra -Wpedantic -Werror
     )
 endif()
+
+# -----------------------------------------------------------------------------
+#  Symbols
+# -----------------------------------------------------------------------------
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
    target_compile_options(${TARGET_NAME} PRIVATE /Zi)
