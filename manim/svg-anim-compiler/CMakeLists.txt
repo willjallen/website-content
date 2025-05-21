@@ -15,7 +15,11 @@ find_package(PkgConfig QUIET)
 option(USE_SYSTEM_CAIRO "Prefer a cairo already on the system" ON)
 
 if(USE_SYSTEM_CAIRO AND PKG_CONFIG_FOUND)
-    pkg_check_modules(CAIRO QUIET cairo)
+    pkg_check_modules(CAIRO IMPORTED_TARGET cairo)
+    if(CAIRO_FOUND AND TARGET PkgConfig::CAIRO AND NOT TARGET cairo::cairo)
+        # Provide a uniform target name for the rest of the script
+        add_library(cairo::cairo ALIAS PkgConfig::CAIRO)
+    endif()
 endif()
 
 # On Windows, try vcpkg’s CMake config before giving up

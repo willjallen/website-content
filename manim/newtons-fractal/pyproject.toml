@@ -3,12 +3,11 @@ name = "website"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 dependencies = [
-    "cloudpickle>=3.1.1",
-    "manim>=0.17.3",
-    "manim-svg-animations>=0.3.13",
+    "manim",
     "setuptools>=80.6.0",
     "snakeviz>=2.2.2",
+    "svgpathtools>=1.7.0",
 ]
 

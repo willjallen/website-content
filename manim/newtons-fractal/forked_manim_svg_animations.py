@@ -66,12 +66,8 @@ from svgpathtools import parse_path
 from manim import *
 
 # Local sibling modules (no public changes)
-from manim_mobject_svg import *  # noqa: F401, pylint: disable=wildcard-import
 from forked_svg import create_svg_from_vgroup
 from data_exporter import ManimDataExporter
-
-import cloudpickle  # for serializing lambda-containing VMobjects across processes
-
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang=\"en\">
@@ -492,7 +488,7 @@ class HTMLParsedVMobject:
         # render with **exactly** the same pixel/frame size etc.  We only
         # need a handful of numeric values – cloudpickle keeps it trivial.
         from manim import config as _mconf  # local import to avoid cycle at top
-        self._cfg_bytes: bytes = cloudpickle.dumps(_mconf)
+        # self._cfg_bytes: bytes = cloudpickle.dumps(_mconf)
 
         self._write_html_shell()
         scene.add_updater(self._frame_updater)  # type: ignore[arg-type]
@@ -541,25 +537,26 @@ class HTMLParsedVMobject:
     @staticmethod
     def _worker(batch: List[Tuple[int, bytes, str]], cfg_bytes: bytes) -> None:  # child process
         """Render each VMobject (sent as *cloudpickle* bytes) to SVG - heavy Cairo work."""
-        import cloudpickle
-        # Apply main-process manim config first.
-        from manim import config as _mconf  
-
-        _cfg = cloudpickle.loads(cfg_bytes)
-        _mconf.update(_cfg)
-
-        # Lazy import of heavy SVG helper *after* config so it sees correct values
-        from forked_svg import create_svg_from_vgroup
-
-        for _idx, vm_bytes, path in batch:
-            try:
-                vm_copy = cloudpickle.loads(vm_bytes)
-            except Exception as exc:  # pragma: no cover – shouldn't happen
-                print(f"[worker] Failed to unpickle VMobject: {exc}")
-                continue
-
-            # The helper handles its own tempfiles etc.
-            create_svg_from_vgroup(vm_copy, path)
+        # import cloudpickle
+        # # Apply main-process manim config first.
+        # from manim import config as _mconf  
+        # 
+        # _cfg = cloudpickle.loads(cfg_bytes)
+        # _mconf.update(_cfg)
+        # 
+        # # Lazy import of heavy SVG helper *after* config so it sees correct values
+        # from forked_svg import create_svg_from_vgroup
+        # 
+        # for _idx, vm_bytes, path in batch:
+        #     try:
+        #         vm_copy = cloudpickle.loads(vm_bytes)
+        #     except Exception as exc:  # pragma: no cover – shouldn't happen
+        #         print(f"[worker] Failed to unpickle VMobject: {exc}")
+        #         continue
+        # 
+        #     # The helper handles its own tempfiles etc.
+        #     create_svg_from_vgroup(vm_copy, path)
+        pass
 
     def _spawn_worker(self, batch: List[Tuple[int, bytes, str]]) -> None:
         """Fork a *detached* process executing :py:meth:`_worker`."""

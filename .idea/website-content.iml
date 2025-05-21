@@ -2,7 +2,7 @@
 <module classpath="CMake" type="CPP_MODULE" version="4">
   <component name="FacetManager">
     <facet type="Python" name="Python facet">
-      <configuration sdkName="Python 3.11 virtualenv at E:\APP\website-content\manim\newtons-fractal\.venv" />
+      <configuration sdkName="Python 3.12 virtualenv at ~/Documents/APP/website-content/manim/newtons-fractal/.venv" />
     </facet>
   </component>
 </module>
