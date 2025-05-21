@@ -10,6 +10,19 @@ add_executable(svgAnimCompiler main.c)
 # -----------------------------------------------------------------------------
 include(FetchContent)
 include(ExternalProject)
+
+
+# -----------------------------------------------------------------------------
+#  Native Cairo discovery (uses CMake's FindCairo which delegates to pkg‑config)
+# -----------------------------------------------------------------------------
+find_package(Cairo QUIET)
+if(TARGET Cairo::Cairo)
+    # Provide a uniform target name so the rest of the script can keep using
+    # `cairo::cairo` regardless of how the library was located.
+    add_library(cairo::cairo ALIAS Cairo::Cairo)
+    set(CAIRO_FOUND TRUE)
+endif()
+
 find_package(PkgConfig QUIET)
 
 option(USE_SYSTEM_CAIRO "Prefer a cairo already on the system" ON)
@@ -70,8 +83,6 @@ set_target_properties(cairo::cairo PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${_cairo_install}/include/cairo"
 )
     add_dependencies(cairo::cairo cairo_ep)
-
-
 
 endif()
 
