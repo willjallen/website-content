@@ -5,6 +5,9 @@
 #include <string.h>
 #include <cairo.h>
 
+#include "ctrs/map.h"
+#include "ctrs/map_test.h"
+
 /**
  * [CTXT]
  *  [FRAM]
@@ -183,7 +186,7 @@ int read_frame(FILE *fp, Frame *frame) {
   return 1;
 }
 
-void free_frame(Frame *F) {
+void free_frame(const Frame *F) {
   for (uint32_t i = 0; i < F->vmo_count; ++i) {
     const VMO *vmo = &F->vmos[i];
     free(vmo->stroke_bg_rgbas);
@@ -238,5 +241,9 @@ int main(int argc, char **argv) {
   cairo_destroy (cr);
   cairo_surface_write_to_png (surface, "/Users/will/Documents/APP/website-content/manim/newtons-fractal/test.png");
   cairo_surface_destroy (surface);
+
+  // Map *map = map_create(4, 8);
+  // map_create(sizeof(uint8_t), alignof(uint8_t));
+  map_tests_run_all();
   return 0;
 }

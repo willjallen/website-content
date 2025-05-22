@@ -2,7 +2,9 @@
 
 project(svgAnimCompiler LANGUAGES C)
 
-add_executable(svgAnimCompiler main.c)
+add_executable(svgAnimCompiler main.c
+        ctrs/map.h
+        ctrs/map_test.h)
 
 
 # -----------------------------------------------------------------------------
@@ -101,7 +103,7 @@ if(MSVC)
     )
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-            -Wall -Wextra -Wpedantic -Werror
+            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
     )
 endif()
 
