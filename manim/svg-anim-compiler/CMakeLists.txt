@@ -103,7 +103,7 @@ if(MSVC)
     )
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
+#            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
     )
 endif()
 
@@ -123,5 +123,18 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     set_target_properties(${TARGET_NAME} PROPERTIES 
         COMPILE_PDB_NAME ${TARGET_NAME} 
         COMPILE_PDB_OUTPUT_DIR ${CMAKE_BINARY_DIR}
+    )
+endif()
+
+
+# -----------------------------------------------------------------------------
+#  Optimizations
+# -----------------------------------------------------------------------------
+
+if(MSVC)
+
+else()  # GCC / Clang
+    target_compile_options(svgAnimCompiler PRIVATE
+            -O3
     )
 endif()

@@ -827,10 +827,10 @@ if __name__ == "__main__":
         {
             "quality": "low_quality",
             "disable_caching": True,
-            "frame_rate": 30,
+            "frame_rate": 5,
             "dry_run": True,
-            "pixel_height": 2160,
-            "pixel_width": 3840,
+            "pixel_width": 800,
+            "pixel_height": 600,
             "background_color": BLACK,
             "background_opacity": 1
         }
