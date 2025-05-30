@@ -3,9 +3,13 @@
 project(svgAnimCompiler LANGUAGES C)
 
 add_executable(svgAnimCompiler main.c
-        ctrs/map.h
-        ctrs/map_test.h)
+        ctrs/include/ctrs/map.h
+        ctrs/include/ctrs/map_test.h
+        frontends/src/manim_fe.c
+        frontends/include/manim/manim_fe.h
+        common/include/common/core.h)
 
+target_include_directories(svgAnimCompiler PRIVATE frontends/include ctrs/include common/include)
 
 # -----------------------------------------------------------------------------
 #  Cairo
@@ -135,6 +139,6 @@ if(MSVC)
 
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-            -O3
+#            -O3
     )
 endif()

@@ -829,8 +829,8 @@ if __name__ == "__main__":
             "disable_caching": True,
             "frame_rate": 5,
             "dry_run": True,
-            "pixel_width": 800,
-            "pixel_height": 600,
+            "pixel_width": 1920,
+            "pixel_height": 1080,
             "background_color": BLACK,
             "background_opacity": 1
         }

@@ -18,6 +18,7 @@ mgc = '4s'
 i32 = 'i'
 u32 = 'I'
 f32 = 'f'
+d64 = 'd'
 
 
 class ManimDataExporter:
@@ -37,7 +38,7 @@ class ManimDataExporter:
 
     def _emit_ctx_config(self):
         self._write(mgc, b'CTXT')
-        self._write(u32 + u32 + u32 + f32 + f32,
+        self._write(u32 + d64 + d64 + d64 + d64,
                     1,
                     config.pixel_width, config.pixel_height,
                     config.frame_width, config.frame_height
