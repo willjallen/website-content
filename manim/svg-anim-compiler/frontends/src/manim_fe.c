@@ -304,7 +304,6 @@ int manim_fe_driver(const char *in_file_path,
       init_cairo_ctx(ctx, &file_header);
       
       vmo_t *vmo = &frame.vmos[i];
-      // printf("%d\n", vmo->id);
       render_vmo(ctx, vmo);
       
       cairo_destroy(ctx);
@@ -324,14 +323,23 @@ int manim_fe_driver(const char *in_file_path,
         continue;
       }
       
-      const char *path_str_end = strstr(path_str_begin, "\n");
+      const char *path_str_end = strstr(path_str_begin, "/>");
 
-      size_t count = path_str_end - path_str_begin;
-      
-      const char path_str[count];
-      strncpy(path_str, path_str_begin, count);
-      
-      buffer_writer(svg_frame_buffer, path_str, count);
+      size_t count = (size_t)(path_str_end - path_str_begin);
+
+      /* +1 for the trailing nul byte */
+      char path_str[count + 1];
+      memcpy(path_str, path_str_begin, count);
+      path_str[count] = '\0';
+
+      // Insert data-tag="vmo->id" as an attribute to the path
+      char tagged_path[strlen(path_str) + snprintf(NULL, 0, "%u", vmo->id) + 32];
+      snprintf(tagged_path, sizeof(tagged_path),
+               "%s data-tag=\"%u\"/>",
+               path_str,
+               vmo->id);
+
+      buffer_writer(svg_frame_buffer, tagged_path, strlen(tagged_path));
       buffer_writer(svg_frame_buffer, "\n", 1);
     }
 
