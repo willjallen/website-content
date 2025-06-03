@@ -142,12 +142,12 @@ int render_vmo(cairo_t *ctx, const vmo_t *vmo);
 cairo_status_t cairo_buffer_writer(void *closure, const unsigned char *data,
                              unsigned int length);
 
-void set_cairo_context_color(cairo_t *ctx, vmo_t *vmo,
+void set_cairo_context_color(cairo_t *ctx, const vmo_t *vmo,
                              context_color_t context_color_type);
 
-void apply_stroke(cairo_t *ctx, vmo_t *vmo, bool background);
+void apply_stroke(cairo_t *ctx, const vmo_t *vmo, bool background);
 
-void apply_fill(cairo_t *ctx, vmo_t *vmo);
+void apply_fill(cairo_t *ctx, const vmo_t *vmo);
 
 int manim_fe_driver(const char *in_file_path,
                     svg_frame_buffers_t *out_svg_frame_buffer);

@@ -114,16 +114,16 @@ int init_cairo_ctx(cairo_t *ctx, const file_header_t *file_header) {
 
 int render_frame(cairo_t *ctx, const frame_t *frame) {
 
-  for (int i = 0; i < frame->vmo_count; i++) {
+  for (uint32_t i = 0; i < frame->vmo_count; i++) {
     vmo_t *vmo = &frame->vmos[i];
     printf("%d\n", vmo->id);
 
     cairo_new_path(ctx);
-    for (int j = 0; j < vmo->subpath_count; j++) {
+    for (uint32_t j = 0; j < vmo->subpath_count; j++) {
       subpath_t *subpath = &vmo->subpaths[j];
       cairo_new_sub_path(ctx);
       cairo_move_to(ctx, subpath->x, subpath->y);
-      for (int k = 0; k < subpath->quad_count; k++) {
+      for (uint32_t k = 0; k < subpath->quad_count; k++) {
         quad_t *quad = &subpath->quads[k];
         cairo_curve_to(ctx, quad->x1, quad->y1, quad->x2, quad->y2, quad->x3,
                        quad->y3);
@@ -149,11 +149,11 @@ int render_frame(cairo_t *ctx, const frame_t *frame) {
 int render_vmo(cairo_t *ctx, const vmo_t *vmo) {
 
   cairo_new_path(ctx);
-  for (int j = 0; j < vmo->subpath_count; j++) {
+  for (uint32_t j = 0; j < vmo->subpath_count; j++) {
     subpath_t *subpath = &vmo->subpaths[j];
     cairo_new_sub_path(ctx);
     cairo_move_to(ctx, subpath->x, subpath->y);
-    for (int k = 0; k < subpath->quad_count; k++) {
+    for (uint32_t k = 0; k < subpath->quad_count; k++) {
       quad_t *quad = &subpath->quads[k];
       cairo_curve_to(ctx, quad->x1, quad->y1, quad->x2, quad->y2, quad->x3,
                      quad->y3);
@@ -188,7 +188,7 @@ cairo_status_t cairo_buffer_writer(void *closure, const unsigned char *data,
   return CAIRO_STATUS_SUCCESS;
 }
 
-void set_cairo_context_color(cairo_t *ctx, vmo_t *vmo,
+void set_cairo_context_color(cairo_t *ctx, const vmo_t *vmo,
                              const context_color_t context_color_type) {
 
   uint32_t rgba_count = 0;
@@ -216,16 +216,16 @@ void set_cairo_context_color(cairo_t *ctx, vmo_t *vmo,
   double step = 1.0 / (vmo->fill_rgbas_count - 1);
 
   double val = 0;
-  for (int i = 0; i < vmo->fill_rgbas_count; i++) {
+  for (uint32_t i = 0; i < vmo->fill_rgbas_count; i++) {
     rgba_t *rgba = &rgbas[i];
-    cairo_pattern_add_color_stop_rgba(pat, step, rgba->vals[0], rgba->vals[1],
+    cairo_pattern_add_color_stop_rgba(pat, val, rgba->vals[0], rgba->vals[1],
                                       rgba->vals[2], rgba->vals[3]);
     val += step;
   }
   cairo_set_source(ctx, pat);
 }
 
-void apply_stroke(cairo_t *ctx, vmo_t *vmo, bool background) {
+void apply_stroke(cairo_t *ctx, const vmo_t *vmo, bool background) {
   double width = background ? vmo->stroke_bg_width : vmo->stroke_width;
   if (width == 0)
     return;
@@ -235,7 +235,7 @@ void apply_stroke(cairo_t *ctx, vmo_t *vmo, bool background) {
   cairo_stroke_preserve(ctx);
 }
 
-void apply_fill(cairo_t *ctx, vmo_t *vmo) {
+void apply_fill(cairo_t *ctx, const vmo_t *vmo) {
   set_cairo_context_color(ctx, vmo, FILL);
   cairo_fill_preserve(ctx);
 }
@@ -243,6 +243,7 @@ void apply_fill(cairo_t *ctx, vmo_t *vmo) {
 int manim_fe_driver(const char *in_file_path,
                     svg_frame_buffers_t *out_svg_frame_buffers) {
 
+  
   printf("Reading from: %s\n", in_file_path);
 
   FILE *fp = fopen(in_file_path, "rb");
@@ -284,7 +285,7 @@ int manim_fe_driver(const char *in_file_path,
     buffer_writer(svg_frame_buffer, (unsigned char *)svg_header,
                   strlen(svg_header));
 
-    for (int i = 0; i < frame.vmo_count; i++) {
+    for (uint32_t i = 0; i < frame.vmo_count; i++) {
       buffer_t vmo_svg_buffer;
       init_buffer(&vmo_svg_buffer);
       cairo_surface_t *surface = cairo_svg_surface_create_for_stream(
@@ -318,7 +319,7 @@ int manim_fe_driver(const char *in_file_path,
 
       size_t count = (size_t)(path_str_end - path_str_begin);
 
-      /* +1 for the trailing nul byte */
+      /* +1 for the trailing null byte */
       char path_str[count + 1];
       memcpy(path_str, path_str_begin, count);
       path_str[count] = '\0';
@@ -334,7 +335,7 @@ int manim_fe_driver(const char *in_file_path,
     }
 
     // Append closing svg tag
-    const unsigned char *svg_closer = "</svg>";
+    const char svg_closer[] = "</svg>";
     buffer_writer(svg_frame_buffer, svg_closer, strlen((char *)svg_closer));
 
     printf("%s", svg_frame_buffer->data);

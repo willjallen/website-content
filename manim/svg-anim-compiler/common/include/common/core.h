@@ -8,10 +8,11 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
-#include <string.h>
+#include <_time.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef enum SvgAnimStatus { SVG_ANIM_STATUS_SUCCESS, SVG_ANIM_STATUS_NO_MEMORY } SvgAnimStatus;
 
@@ -28,7 +29,7 @@ inline static void init_buffer(buffer_t *buffer) {
 }
 
 
-inline static SvgAnimStatus buffer_writer(void *closure, const unsigned char *data, const size_t length) {
+inline static SvgAnimStatus buffer_writer(void *closure, const void *data, const size_t length) {
   buffer_t *buffer = closure;
 
   if (!length)
@@ -64,5 +65,18 @@ typedef struct svg_frame_buffers_t {
   size_t num_frames;
   buffer_t *svg_frames;
 } svg_frame_buffers_t;
+
+
+typedef struct timespec timespec;
+
+static inline timespec ts_now(void) {
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts;
+}
+
+static inline double ts_elapsed_sec(const timespec start, const timespec end) {
+  return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+}
 
 #endif //CORE_H

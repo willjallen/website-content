@@ -7,7 +7,8 @@ add_executable(svgAnimCompiler main.c
         ctrs/include/ctrs/map_test.h
         frontends/src/manim_fe.c
         frontends/include/manim/manim_fe.h
-        common/include/common/core.h)
+        common/include/common/core.h
+        ir/include/ir/ir.h)
 
 target_include_directories(svgAnimCompiler PRIVATE frontends/include ctrs/include common/include)
 
@@ -107,7 +108,7 @@ if(MSVC)
     )
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-#            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
+            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
     )
 endif()
 
