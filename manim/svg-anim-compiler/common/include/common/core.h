@@ -8,8 +8,12 @@
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 #endif
+#include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
+
+typedef enum SvgAnimStatus { SVG_ANIM_STATUS_SUCCESS, SVG_ANIM_STATUS_NO_MEMORY } SvgAnimStatus;
 
 typedef struct buffer_t {
   char *data;
@@ -21,6 +25,39 @@ inline static void init_buffer(buffer_t *buffer) {
   buffer->size = 0;
   buffer->capacity = 0;
   buffer->data = NULL;
+}
+
+
+inline static SvgAnimStatus buffer_writer(void *closure, const unsigned char *data, const size_t length) {
+  buffer_t *buffer = closure;
+
+  if (!length)
+    return SVG_ANIM_STATUS_SUCCESS;
+
+  const size_t needed = buffer->size + length;
+  
+  if (needed > buffer->capacity) {
+    size_t new_capacity = buffer->capacity ? buffer->capacity * 2 : 1024;
+
+    while (new_capacity < needed) {
+      if (new_capacity > SIZE_MAX / 2) {
+        return SVG_ANIM_STATUS_NO_MEMORY;
+      }
+      new_capacity *= 2;
+    }
+
+    void *new_data = realloc(buffer->data, new_capacity);
+    if (!new_data)
+      return SVG_ANIM_STATUS_NO_MEMORY;
+
+    buffer->data = new_data;
+    buffer->capacity = new_capacity;
+  }
+
+  memcpy((unsigned char *)buffer->data + buffer->size, data, length);
+  buffer->size += length;
+
+  return SVG_ANIM_STATUS_SUCCESS;
 }
 
 typedef struct svg_frame_buffers_t {

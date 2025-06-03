@@ -139,7 +139,7 @@ int render_frame(cairo_t *ctx, const frame_t *frame);
 
 int render_vmo(cairo_t *ctx, const vmo_t *vmo);
 
-cairo_status_t buffer_writer(void *closure, const unsigned char *data,
+cairo_status_t cairo_buffer_writer(void *closure, const unsigned char *data,
                              unsigned int length);
 
 void set_cairo_context_color(cairo_t *ctx, vmo_t *vmo,

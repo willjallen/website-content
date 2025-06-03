@@ -1,16 +1,16 @@
 #include <cairo-svg.h>
 #include <cairo.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <math.h>
 
 #include "ctrs/map.h"
 #include "ctrs/map_test.h"
 
-#include "manim/manim_fe.h"
 #include "common/core.h"
+#include "manim/manim_fe.h"
 
 /**
  * ===================================
@@ -113,7 +113,7 @@ int init_cairo_ctx(cairo_t *ctx, const file_header_t *file_header) {
 }
 
 int render_frame(cairo_t *ctx, const frame_t *frame) {
-  
+
   for (int i = 0; i < frame->vmo_count; i++) {
     vmo_t *vmo = &frame->vmos[i];
     printf("%d\n", vmo->id);
@@ -147,7 +147,7 @@ int render_frame(cairo_t *ctx, const frame_t *frame) {
 }
 
 int render_vmo(cairo_t *ctx, const vmo_t *vmo) {
-  
+
   cairo_new_path(ctx);
   for (int j = 0; j < vmo->subpath_count; j++) {
     subpath_t *subpath = &vmo->subpaths[j];
@@ -175,26 +175,15 @@ int render_vmo(cairo_t *ctx, const vmo_t *vmo) {
   return 1;
 }
 
-cairo_status_t buffer_writer(void *closure, const unsigned char *data,
-                             unsigned int length) {
-  buffer_t *buffer = closure;
-
-  size_t new_capacity = buffer->capacity;
-  if (buffer->size + length > buffer->capacity) {
-    new_capacity = buffer->capacity ? buffer->capacity * 2 : 4096;
-    while (new_capacity < buffer->size + length)
-      new_capacity *= 2;
-
-    void *new_data = realloc(buffer->data, new_capacity);
-    if (!new_data)
-      return CAIRO_STATUS_NO_MEMORY;
-
-    buffer->data = new_data;
-    buffer->capacity = new_capacity;
+cairo_status_t cairo_buffer_writer(void *closure, const unsigned char *data,
+                                   const unsigned int length) {
+  const SvgAnimStatus status = buffer_writer(closure, data, length);
+  switch (status) {
+  case SVG_ANIM_STATUS_SUCCESS:
+    return CAIRO_STATUS_SUCCESS;
+  case SVG_ANIM_STATUS_NO_MEMORY:
+    return CAIRO_STATUS_NO_MEMORY;
   }
-
-  memcpy(buffer->data + buffer->size, data, length);
-  buffer->size += length;
 
   return CAIRO_STATUS_SUCCESS;
 }
@@ -270,7 +259,7 @@ int manim_fe_driver(const char *in_file_path,
   out_svg_frame_buffers->svg_frames = malloc(1000000);
   while (read_frame(fp, &frame)) {
 
-    //     
+    //
     /**
      * read frame ->
      * collect each vmo svg path ->
@@ -286,26 +275,28 @@ int manim_fe_driver(const char *in_file_path,
     char svg_header[256];
     snprintf(svg_header, sizeof(svg_header),
              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-             "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
-             "width=\"%f\" height=\"%f\" viewBox=\"0 0 %f %f\" style=\"background: black\">",
+             "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+             "xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+             "width=\"%f\" height=\"%f\" viewBox=\"0 0 %f %f\" "
+             "style=\"background: black\">",
              file_header.pixel_width, file_header.pixel_height,
              file_header.pixel_width, file_header.pixel_height);
-    buffer_writer(svg_frame_buffer, (unsigned char*)svg_header, strlen(svg_header));
+    buffer_writer(svg_frame_buffer, (unsigned char *)svg_header,
+                  strlen(svg_header));
 
-    
     for (int i = 0; i < frame.vmo_count; i++) {
       buffer_t vmo_svg_buffer;
       init_buffer(&vmo_svg_buffer);
       cairo_surface_t *surface = cairo_svg_surface_create_for_stream(
-          buffer_writer, &vmo_svg_buffer, file_header.pixel_width,
+          cairo_buffer_writer, &vmo_svg_buffer, file_header.pixel_width,
           file_header.pixel_height);
       cairo_t *ctx = cairo_create(surface);
 
       init_cairo_ctx(ctx, &file_header);
-      
+
       vmo_t *vmo = &frame.vmos[i];
       render_vmo(ctx, vmo);
-      
+
       cairo_destroy(ctx);
 
       // cairo flushes svg text to stream here
@@ -313,7 +304,7 @@ int manim_fe_driver(const char *in_file_path,
 
       // Null-terminate the SVG data for safe string operations
       buffer_writer(&vmo_svg_buffer, "\0", 1);
-      
+
       // extract <path>
       const char *svg_str = vmo_svg_buffer.data;
       const char *path_str_begin = strstr(svg_str, "<path ");
@@ -322,7 +313,7 @@ int manim_fe_driver(const char *in_file_path,
         // Cairo did not emit a <path> for this vmo, bail.
         continue;
       }
-      
+
       const char *path_str_end = strstr(path_str_begin, "/>");
 
       size_t count = (size_t)(path_str_end - path_str_begin);
@@ -333,11 +324,10 @@ int manim_fe_driver(const char *in_file_path,
       path_str[count] = '\0';
 
       // Insert data-tag="vmo->id" as an attribute to the path
-      char tagged_path[strlen(path_str) + snprintf(NULL, 0, "%u", vmo->id) + 32];
-      snprintf(tagged_path, sizeof(tagged_path),
-               "%s data-tag=\"%u\"/>",
-               path_str,
-               vmo->id);
+      char
+          tagged_path[strlen(path_str) + snprintf(NULL, 0, "%u", vmo->id) + 32];
+      snprintf(tagged_path, sizeof(tagged_path), "%s data-tag=\"%u\"/>",
+               path_str, vmo->id);
 
       buffer_writer(svg_frame_buffer, tagged_path, strlen(tagged_path));
       buffer_writer(svg_frame_buffer, "\n", 1);
@@ -345,31 +335,30 @@ int manim_fe_driver(const char *in_file_path,
 
     // Append closing svg tag
     const unsigned char *svg_closer = "</svg>";
-    buffer_writer(svg_frame_buffer, svg_closer, strlen((char*)svg_closer));
-    
+    buffer_writer(svg_frame_buffer, svg_closer, strlen((char *)svg_closer));
+
     printf("%s", svg_frame_buffer->data);
     // Dump SVG data to a file named <frame_index>.svg
-    {
-      char filename[512];
-      snprintf(filename, sizeof(filename),
-               "/Users/will/Documents/APP/website-content/manim/newtons-fractal/test/%d.svg",
-               frame_index);
-      FILE *fout = fopen(filename, "wb");
-      if (fout) {
-        fwrite(svg_frame_buffer->data, 1, svg_frame_buffer->size, fout);
-        fclose(fout);
-      } else {
-        perror("fopen SVG output failed");
-      }
-    }
-    
+    // {
+    //   char filename[512];
+    //   snprintf(filename, sizeof(filename),
+    //            "/Users/will/Documents/APP/website-content/manim/newtons-fractal/test/%d.svg",
+    //            frame_index);
+    //   FILE *fout = fopen(filename, "wb");
+    //   if (fout) {
+    //     fwrite(svg_frame_buffer->data, 1, svg_frame_buffer->size, fout);
+    //     fclose(fout);
+    //   } else {
+    //     perror("fopen SVG output failed");
+    //   }
+    // }
+
     free_frame(&frame);
     ++frame_index;
   }
-  
+
   out_svg_frame_buffers->num_frames = frame_index;
 
-  
   fclose(fp);
   return 0;
 }
