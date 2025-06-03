@@ -9,7 +9,6 @@ int main(const int argc, const char **argv) {
     }
   
   const char *in_data_file = argv[1];
-  printf("Reading from: %s\n", in_data_file);
 
   svg_frame_buffers_t svg_frame_buffers;
   manim_fe_driver(in_data_file, &svg_frame_buffers);

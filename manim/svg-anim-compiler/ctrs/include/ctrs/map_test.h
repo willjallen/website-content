@@ -11,7 +11,9 @@
 #ifndef MAP_TESTS_H
 #define MAP_TESTS_H
 
+#include "common/core.h"
 #include "map.h"
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -38,20 +40,6 @@ static inline uint32_t prng_next(uint32_t *state) {
 }
 
 /* ---------------------------------------------------------------------------
-   Timing helpers
-   ------------------------------------------------------------------------ */
-static inline struct timespec ts_now(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ts;
-}
-
-static inline double ts_elapsed_sec(struct timespec start,
-                                    struct timespec end) {
-  return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-}
-
-/* ---------------------------------------------------------------------------
    Test 1: basic CRUD
    ------------------------------------------------------------------------ */
 static void map_test_basic(void) {
@@ -59,7 +47,7 @@ static void map_test_basic(void) {
 
   Map *m = map_create(sizeof(uint64_t), alignof(uint64_t));
 
-  uint64_t value = 0xdeadbeefcafebabeULL;
+  const uint64_t value = 0xdeadbeefcafebabeULL;
   assert(map_put(m, 42u, &value) == 1);
 
   uint64_t readback = 0;
@@ -127,7 +115,7 @@ static void map_test_perf(size_t count) {
   }
 
   /* 1) bulk insert ----------------------------------------------------- */
-  struct timespec t0 = ts_now();
+  timespec t0 = ts_now();
   for (size_t i = 0; i < count; ++i)
     map_put(m, keys[i], &vals[i]);
   struct timespec t1 = ts_now();
@@ -136,12 +124,12 @@ static void map_test_perf(size_t count) {
   uint32_t tmp;
   for (size_t i = 0; i < count; ++i)
     assert(map_get(m, keys[i], &tmp) && tmp == vals[i]);
-  struct timespec t2 = ts_now();
+  timespec t2 = ts_now();
 
   /* 3) removals -------------------------------------------------------- */
   for (size_t i = 0; i < count; ++i)
     assert(map_remove(m, keys[i]) == 1);
-  struct timespec t3 = ts_now();
+  timespec t3 = ts_now();
 
   /* ------------------------------------------------------------------- */
   double ins_s = ts_elapsed_sec(t0, t1);

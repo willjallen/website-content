@@ -243,6 +243,10 @@ void apply_fill(cairo_t *ctx, const vmo_t *vmo) {
 int manim_fe_driver(const char *in_file_path,
                     svg_frame_buffers_t *out_svg_frame_buffers) {
 
+
+  printf("Starting Manim frontend driver..\n");
+  
+  timespec perf_start_time = ts_now();
   
   printf("Reading from: %s\n", in_file_path);
 
@@ -336,9 +340,9 @@ int manim_fe_driver(const char *in_file_path,
 
     // Append closing svg tag
     const char svg_closer[] = "</svg>";
-    buffer_writer(svg_frame_buffer, svg_closer, strlen((char *)svg_closer));
+    buffer_writer(svg_frame_buffer, svg_closer, strlen(svg_closer));
 
-    printf("%s", svg_frame_buffer->data);
+    // printf("%s", svg_frame_buffer->data);
     // Dump SVG data to a file named <frame_index>.svg
     // {
     //   char filename[512];
@@ -361,5 +365,10 @@ int manim_fe_driver(const char *in_file_path,
   out_svg_frame_buffers->num_frames = frame_index;
 
   fclose(fp);
+
+  timespec perf_end_time = ts_now();
+  double perf_total_time = ts_elapsed_sec(perf_start_time, perf_end_time);
+  printf("Manim frontend completed. Elapsed: %.4f seconds\n", perf_total_time);
+  
   return 0;
 }
