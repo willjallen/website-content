@@ -8,9 +8,11 @@ add_executable(svgAnimCompiler main.c
         frontends/src/manim_fe.c
         frontends/include/manim/manim_fe.h
         common/include/common/core.h
-        ir/include/ir/ir.h)
+        ir/src/gen_ir.c
+        ir/include/ir/ir.h
+        ir/include/ir/gen_ir.h)
 
-target_include_directories(svgAnimCompiler PRIVATE frontends/include ctrs/include common/include)
+target_include_directories(svgAnimCompiler PRIVATE frontends/include ctrs/include common/include ir/include)
 
 # -----------------------------------------------------------------------------
 #  Cairo

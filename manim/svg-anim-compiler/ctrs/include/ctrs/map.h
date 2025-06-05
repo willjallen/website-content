@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "common/core.h"
 
 /**
  * Hash map takes input uint32_t, hashes it, takes mod <bucket count>, uses
@@ -23,8 +24,6 @@
 #define MAP_START_SIZE 64
 #define MAP_MAX_LOAD 60
 
-#define ALIGN_UP(value, alignment)                                             \
-  (((value) + ((alignment) - 1)) & ~((alignment) - 1))
 
 typedef enum BucketState {
   MAP_BUCKET_OCCUPIED,
@@ -32,15 +31,15 @@ typedef enum BucketState {
   MAP_BUCKET_EMPTY
 } BucketState;
 
-typedef struct Bucket {
+typedef struct bucket_t {
   uint32_t key;
   BucketState state;
 
   uint8_t data[];
 
-} Bucket;
+} bucket_t;
 
-typedef struct Map {
+typedef struct map_t {
   size_t size;
   uint32_t count;
 
@@ -48,9 +47,9 @@ typedef struct Map {
   size_t element_align;
 
   size_t bucket_stride;
-  Bucket *table;
+  bucket_t *table;
 
-} Map;
+} map_t;
 #define MAP_EMPTY_KEY UINT32_MAX
 
 /**
@@ -58,25 +57,25 @@ typedef struct Map {
  * - map->size must be a power of two
  * - element_align must be a power of two
  */
-static Map *map_create(size_t element_size, size_t element_align);
-static void map_destroy(Map *map);
-static int map_put(Map *map, uint32_t key, const void *element);
-static int map_get(const Map *map, const uint32_t key, void *out_element);
-static int map_remove(Map *map, const uint32_t key);
-static int _map_resize(Map *map);
-static int _load_ok(const Map *map);
-static Bucket *_bucket_at(const Map *map, size_t i);
-static Bucket *_bucket_at_base(uint8_t *base, size_t stride, size_t i);
+static map_t *map_create(size_t element_size, size_t element_align);
+static void map_destroy(map_t *map);
+static int map_put(map_t *map, uint32_t key, const void *element);
+static int map_get(const map_t *map, const uint32_t key, void *out_element);
+static int map_remove(map_t *map, const uint32_t key);
+static int _map_resize(map_t *map);
+static int _load_ok(const map_t *map);
+static bucket_t *_bucket_at(const map_t *map, size_t i);
+static bucket_t *_bucket_at_base(uint8_t *base, size_t stride, size_t i);
 static uint32_t _map_hash_u32(uint32_t key);
 static size_t _next_valid_alignment(size_t a);
 
-static Map *map_create(const size_t element_size, const size_t element_align) {
-  Map *map = malloc(sizeof(Map));
+static map_t *map_create(const size_t element_size, const size_t element_align) {
+  map_t *map = malloc(sizeof(map_t));
   map->size = MAP_START_SIZE;
   map->element_size = element_size;
   map->element_align = element_align;
 
-  map->bucket_stride = ALIGN_UP(sizeof(Bucket) + element_size, element_align);
+  map->bucket_stride = ALIGN_UP(sizeof(bucket_t) + element_size, element_align);
   map->table = aligned_alloc(_next_valid_alignment(element_align),
                              map->size * map->bucket_stride);
 
@@ -88,12 +87,12 @@ static Map *map_create(const size_t element_size, const size_t element_align) {
   return map;
 }
 
-static void map_destroy(Map *map) {
+static void map_destroy(map_t *map) {
   free(map->table);
   free(map);
 }
 
-static int map_put(Map *map, const uint32_t key, const void *element) {
+static int map_put(map_t *map, const uint32_t key, const void *element) {
   if (!_load_ok(map)) {
     if (!_map_resize(map))
       return 0;
@@ -104,7 +103,7 @@ static int map_put(Map *map, const uint32_t key, const void *element) {
 
   size_t i = 0;
   while (true) {
-    Bucket *bucket = _bucket_at(map, idx);
+    bucket_t *bucket = _bucket_at(map, idx);
 
     if (bucket->state == MAP_BUCKET_OCCUPIED && bucket->key == key) {
       memcpy((void *)bucket->data, element, map->element_size);
@@ -128,12 +127,12 @@ static int map_put(Map *map, const uint32_t key, const void *element) {
   }
 }
 
-static int map_get(const Map *map, const uint32_t key, void *out_element) {
+static int map_get(const map_t *map, const uint32_t key, void *out_element) {
   uint32_t hash = _map_hash_u32(key);
   uint32_t idx = hash % map->size;
 
   while (true) {
-    Bucket *bucket = _bucket_at(map, idx);
+    bucket_t *bucket = _bucket_at(map, idx);
     if (bucket->key == key) {
       memcpy(out_element, &bucket->data, map->element_size);
       return 1;
@@ -147,13 +146,13 @@ static int map_get(const Map *map, const uint32_t key, void *out_element) {
   }
 }
 
-static int map_remove(Map *map, const uint32_t key) {
+static int map_remove(map_t *map, const uint32_t key) {
   uint32_t hash = _map_hash_u32(key);
   uint32_t idx = hash % map->size;
 
   size_t i = 0;
   while (true) {
-    Bucket *bucket = _bucket_at(map, idx);
+    bucket_t *bucket = _bucket_at(map, idx);
     if (bucket->state == MAP_BUCKET_EMPTY)
       return 0;
 
@@ -173,11 +172,11 @@ static int map_remove(Map *map, const uint32_t key) {
   }
 }
 
-static int _map_resize(Map *map) {
+static int _map_resize(map_t *map) {
   const size_t old_map_size = map->size;
   const size_t new_map_size = old_map_size * 2;
 
-  Bucket *old_table = map->table;
+  bucket_t *old_table = map->table;
   void *new_table = aligned_alloc(_next_valid_alignment(map->element_align),
                                   new_map_size * map->bucket_stride);
 
@@ -185,7 +184,7 @@ static int _map_resize(Map *map) {
   map->size = new_map_size;
 
   for (size_t i = 0; i < map->size; i++) {
-    Bucket *bucket =
+    bucket_t *bucket =
         _bucket_at_base((uint8_t *)map->table, map->bucket_stride, i);
     bucket->key = MAP_EMPTY_KEY;
     bucket->state = MAP_BUCKET_EMPTY;
@@ -193,7 +192,7 @@ static int _map_resize(Map *map) {
 
   map->count = 0;
   for (size_t i = 0; i < old_map_size; i++) {
-    const Bucket *bucket =
+    const bucket_t *bucket =
         _bucket_at_base((uint8_t *)old_table, map->bucket_stride, i);
     if (bucket->key != MAP_EMPTY_KEY) {
       if (!map_put(map, bucket->key, &bucket->data))
@@ -210,17 +209,17 @@ static int _map_resize(Map *map) {
  * @param map self
  * @return 1 if load is acceptable, else 0
  */
-static int _load_ok(const Map *map) {
+static int _load_ok(const map_t *map) {
   return (map->count * 100 / map->size) < MAP_MAX_LOAD;
 }
 
-static Bucket *_bucket_at(const Map *map, const size_t i) {
-  return (Bucket *)((uint8_t *)map->table + i * map->bucket_stride);
+static bucket_t *_bucket_at(const map_t *map, const size_t i) {
+  return (bucket_t *)((uint8_t *)map->table + i * map->bucket_stride);
 }
 
-static Bucket *_bucket_at_base(uint8_t *base, const size_t stride,
+static bucket_t *_bucket_at_base(uint8_t *base, const size_t stride,
                                const size_t i) {
-  return (Bucket *)(base + i * stride);
+  return (bucket_t *)(base + i * stride);
 }
 
 static uint32_t _map_hash_u32(uint32_t key) {

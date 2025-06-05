@@ -14,6 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+#define ALIGN_UP(value, alignment)                                             \
+(((value) + ((alignment) - 1)) & ~((alignment) - 1))
+
 typedef enum SvgAnimStatus { SVG_ANIM_STATUS_SUCCESS, SVG_ANIM_STATUS_NO_MEMORY } SvgAnimStatus;
 
 typedef struct buffer_t {
@@ -65,6 +69,11 @@ typedef struct svg_frame_buffers_t {
   size_t num_frames;
   buffer_t *svg_frames;
 } svg_frame_buffers_t;
+
+typedef struct ir_frame_buffers_t {
+  size_t num_frames;
+  buffer_t *ir_frames;
+} ir_frame_buffers_t;
 
 
 typedef struct timespec timespec;

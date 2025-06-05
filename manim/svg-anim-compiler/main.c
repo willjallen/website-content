@@ -1,4 +1,5 @@
 ﻿#include "manim/manim_fe.h"
+#include "ir/gen_ir.h"
 
 #include <stdio.h>
 int main(const int argc, const char **argv) {
@@ -12,6 +13,7 @@ int main(const int argc, const char **argv) {
 
   svg_frame_buffers_t svg_frame_buffers;
   manim_fe_driver(in_data_file, &svg_frame_buffers);
+  gen_ir_driver(&svg_frame_buffers);
   
   return 0;
 }

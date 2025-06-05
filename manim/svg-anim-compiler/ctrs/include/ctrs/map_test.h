@@ -45,7 +45,7 @@ static inline uint32_t prng_next(uint32_t *state) {
 static void map_test_basic(void) {
   puts("[basic]");
 
-  Map *m = map_create(sizeof(uint64_t), alignof(uint64_t));
+  map_t *m = map_create(sizeof(uint64_t), alignof(uint64_t));
 
   const uint64_t value = 0xdeadbeefcafebabeULL;
   assert(map_put(m, 42u, &value) == 1);
@@ -66,7 +66,7 @@ static void map_test_basic(void) {
 static void map_test_resize(void) {
   puts("[resize / load]");
 
-  Map *m = map_create(sizeof(uint32_t), alignof(uint32_t));
+  map_t *m = map_create(sizeof(uint32_t), alignof(uint32_t));
   size_t original_size = m->size;
 
   uint32_t payload = 0;
@@ -98,7 +98,7 @@ static void map_test_resize(void) {
 static void map_test_perf(size_t count) {
   printf("[perf] %lu items\n", count);
 
-  Map *m = map_create(sizeof(uint32_t), alignof(uint32_t));
+  map_t *m = map_create(sizeof(uint32_t), alignof(uint32_t));
 
   uint32_t *keys = malloc(count * sizeof(uint32_t));
   uint32_t *vals = malloc(count * sizeof(uint32_t));

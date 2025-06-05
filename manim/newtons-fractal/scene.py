@@ -827,7 +827,7 @@ if __name__ == "__main__":
         {
             "quality": "low_quality",
             "disable_caching": True,
-            "frame_rate": 5,
+            "frame_rate": 30,
             "dry_run": True,
             "pixel_width": 1920,
             "pixel_height": 1080,

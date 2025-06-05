@@ -70,7 +70,6 @@ class ManimDataExporter:
 
         self._write(mgc, b'VMOB')
         self._write(u32, vmo.tagged_name)
-        print(vmo.tagged_name)
         # Style
         self._write(f32, _stroke_width_background)
         self._write(f32, _stroke_width)

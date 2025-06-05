@@ -75,9 +75,9 @@ NOP_FRAME                 (none)
 #define IR_H
 #include <stdint.h>
 
-typedef enum ShapeType { PATH, CIRCLE, ELLIPSE, RECT } ShapeType;
+typedef enum shape_type_e { PATH, CIRCLE, ELLIPSE, RECT } shape_type_e;
 
-typedef enum AttributeType {
+typedef enum attribute_type_e {
     ALIGNMENT_BASELINE,
     WRITING_MODE,
     CLIP,
@@ -137,21 +137,37 @@ typedef enum AttributeType {
     VISIBILITY,
     WORD_SPACING,
     LETTER_SPACING
-} AttributeType;
+} attribute_type_e;
+
+typedef enum ir_opcode_e {
+  IR_OP_INS,
+  IR_OP_DEL,
+  IR_OP_SET_ATTR
+} ir_opcode_e;
 
 typedef struct ir_op_ins_t {
   uint32_t element_id;
-  ShapeType shape_type;
-} ir_ins_t;
+  shape_type_e shape_type;
+} ir_op_ins_t;
 
 typedef struct ir_op_del_t {
   uint32_t element_id;
-} ir_del_t;
+} ir_op_del_t;
 
 typedef struct ir_op_set_attr_t {
   uint32_t element_id;
-  AttributeType attribute_type;
+  attribute_type_e attribute_type;
   char *attribute_value_str;
 } ir_op_set_attr_t;
+
+typedef struct {
+  ir_opcode_e op;
+  
+  __extension__ union {
+    ir_op_ins_t ins;
+    ir_op_del_t del;
+    ir_op_set_attr_t set_attr;
+  };
+} ir_op_t;
 
 #endif // IR_H
