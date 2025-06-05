@@ -76,15 +76,15 @@ typedef struct ir_frame_buffers_t {
 } ir_frame_buffers_t;
 
 
-typedef struct timespec timespec;
+typedef struct timespec timespec_t;
 
-static inline timespec ts_now(void) {
-  timespec ts;
+static inline timespec_t ts_now(void) {
+  timespec_t ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return ts;
 }
 
-static inline double ts_elapsed_sec(const timespec start, const timespec end) {
+static inline double ts_elapsed_sec(const timespec_t start, const timespec_t end) {
   return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
 }
 

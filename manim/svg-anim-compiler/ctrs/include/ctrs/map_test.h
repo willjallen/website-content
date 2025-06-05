@@ -115,7 +115,7 @@ static void map_test_perf(size_t count) {
   }
 
   /* 1) bulk insert ----------------------------------------------------- */
-  timespec t0 = ts_now();
+  timespec_t t0 = ts_now();
   for (size_t i = 0; i < count; ++i)
     map_put(m, keys[i], &vals[i]);
   struct timespec t1 = ts_now();
@@ -124,12 +124,12 @@ static void map_test_perf(size_t count) {
   uint32_t tmp;
   for (size_t i = 0; i < count; ++i)
     assert(map_get(m, keys[i], &tmp) && tmp == vals[i]);
-  timespec t2 = ts_now();
+  timespec_t t2 = ts_now();
 
   /* 3) removals -------------------------------------------------------- */
   for (size_t i = 0; i < count; ++i)
     assert(map_remove(m, keys[i]) == 1);
-  timespec t3 = ts_now();
+  timespec_t t3 = ts_now();
 
   /* ------------------------------------------------------------------- */
   double ins_s = ts_elapsed_sec(t0, t1);
