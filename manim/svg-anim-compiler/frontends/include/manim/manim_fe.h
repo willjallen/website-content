@@ -5,10 +5,13 @@
 #ifndef MANIM_FE_H
 #define MANIM_FE_H
 
-#include "common/core.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <cairo.h>
+
+
+#include "common/core.h"
+#include "common/arena.h"
 
 #pragma pack(push, 1)
 
@@ -122,7 +125,7 @@ typedef struct {
  */
 
 int read_header(FILE *fp, file_header_t *file_header);
-int read_frame(FILE *fp, frame_t *frame);
+int read_frame(arena_t *frame_arena, FILE *fp, frame_t *frame);
 void free_frame(const frame_t *frame);
 
 /**

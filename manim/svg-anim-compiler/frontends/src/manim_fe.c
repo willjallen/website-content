@@ -10,6 +10,7 @@
 #include "ctrs/map_test.h"
 
 #include "common/core.h"
+#include "common/arena.h"
 #include "manim/manim_fe.h"
 
 /**
@@ -28,7 +29,7 @@ int read_header(FILE *fp, file_header_t *file_header) {
   return 1;
 }
 
-int read_frame(FILE *fp, frame_t *frame) {
+int read_frame(arena_t *frame_arena, FILE *fp, frame_t *frame) {
   fread(&frame->magic, sizeof(frame->magic), 1, fp);
 
   if (unlikely(memcmp(frame->magic, "FRAM", 4) != 0)) {
@@ -39,9 +40,7 @@ int read_frame(FILE *fp, frame_t *frame) {
   if (fread(&frame->vmo_count, sizeof(frame->vmo_count), 1, fp) != 1)
     return 0;
 
-  // Allocate vmos
-  // TODO: How slow is this?
-  frame->vmos = calloc(frame->vmo_count, sizeof(vmo_t));
+  frame->vmos = arena_push_array(frame_arena, vmo_t, frame->vmo_count);
 
   for (uint32_t i = 0; i < frame->vmo_count; i++) {
     vmo_t *vmo = &frame->vmos[i];
@@ -50,19 +49,19 @@ int read_frame(FILE *fp, frame_t *frame) {
     fread(vmo, offsetof(vmo_t, stroke_bg_rgbas), 1, fp);
 
     // Stroke background RGBAs
-    vmo->stroke_bg_rgbas = calloc(vmo->stroke_bg_rgbas_count, sizeof(rgba_t));
+    vmo->stroke_bg_rgbas = arena_push_array(frame_arena, rgba_t, vmo->stroke_bg_rgbas_count);
     fread(vmo->stroke_bg_rgbas, sizeof(rgba_t), vmo->stroke_bg_rgbas_count, fp);
 
     // Stroke RGBAs
-    vmo->stroke_rgbas = calloc(vmo->stroke_rgbas_count, sizeof(rgba_t));
+    vmo->stroke_rgbas = arena_push_array(frame_arena, rgba_t, vmo->stroke_rgbas_count);
     fread(vmo->stroke_rgbas, sizeof(rgba_t), vmo->stroke_rgbas_count, fp);
 
     // Fill RGBAs
-    vmo->fill_rgbas = calloc(vmo->fill_rgbas_count, sizeof(rgba_t));
+    vmo->fill_rgbas = arena_push_array(frame_arena, rgba_t, vmo->fill_rgbas_count);
     fread(vmo->fill_rgbas, sizeof(rgba_t), vmo->fill_rgbas_count, fp);
 
     // Subpaths
-    vmo->subpaths = calloc(vmo->subpath_count, sizeof(subpath_t));
+    vmo->subpaths = arena_push_array(frame_arena, subpath_t, vmo->subpath_count);
     for (uint32_t j = 0; j < vmo->subpath_count; j++) {
       subpath_t *subpath = &vmo->subpaths[j];
 
@@ -70,25 +69,12 @@ int read_frame(FILE *fp, frame_t *frame) {
       fread(subpath, offsetof(subpath_t, quads), 1, fp);
 
       // Quads
-      subpath->quads = calloc(subpath->quad_count, sizeof(quad_t));
+      subpath->quads = arena_push_array(frame_arena, quad_t, subpath->quad_count);
       fread(subpath->quads, sizeof(quad_t), subpath->quad_count, fp);
     }
   }
 
   return 1;
-}
-
-void free_frame(const frame_t *frame) {
-  for (uint32_t i = 0; i < frame->vmo_count; ++i) {
-    const vmo_t *vmo = &frame->vmos[i];
-    free(vmo->stroke_bg_rgbas);
-    free(vmo->stroke_rgbas);
-    free(vmo->fill_rgbas);
-    for (uint32_t s = 0; s < vmo->subpath_count; ++s)
-      free(vmo->subpaths[s].quads);
-    free(vmo->subpaths);
-  }
-  free(frame->vmos);
 }
 
 /**
@@ -246,7 +232,10 @@ int manim_fe_driver(const char *in_file_path,
 
   printf("Starting Manim frontend driver..\n");
   
-  timespec perf_start_time = ts_now();
+  timespec_t perf_total_start_time = ts_now();
+  double perf_surface_destroy_cum_time = 0;
+
+  arena_t *frame_arena = arena_alloc();
   
   printf("Reading from: %s\n", in_file_path);
 
@@ -262,7 +251,7 @@ int manim_fe_driver(const char *in_file_path,
   frame_t frame;
   int frame_index = 0;
   out_svg_frame_buffers->svg_frames = malloc(1000000);
-  while (read_frame(fp, &frame)) {
+  while (read_frame(frame_arena, fp, &frame)) {
 
     //
     /**
@@ -304,8 +293,13 @@ int manim_fe_driver(const char *in_file_path,
 
       cairo_destroy(ctx);
 
+      const timespec_t perf_surface_destroy_start_time = ts_now();
       // cairo flushes svg text to stream here
       cairo_surface_destroy(surface);
+      const timespec_t perf_surface_destroy_end_time = ts_now();
+      
+      double perf_surface_destroy_total_time = ts_elapsed_sec(perf_surface_destroy_start_time, perf_surface_destroy_end_time);
+      perf_surface_destroy_cum_time += perf_surface_destroy_total_time;
 
       // Null-terminate the SVG data for safe string operations
       buffer_writer(&vmo_svg_buffer, "\0", 1);
@@ -358,17 +352,20 @@ int manim_fe_driver(const char *in_file_path,
     //   }
     // }
 
-    free_frame(&frame);
     ++frame_index;
   }
+
+  
+  arena_release(frame_arena);
 
   out_svg_frame_buffers->num_frames = frame_index;
 
   fclose(fp);
 
-  timespec perf_end_time = ts_now();
-  double perf_total_time = ts_elapsed_sec(perf_start_time, perf_end_time);
-  printf("Manim frontend completed. Elapsed: %.4f seconds\n", perf_total_time);
+  timespec_t perf_total_end_time = ts_now();
+  double perf_total_time = ts_elapsed_sec(perf_total_start_time, perf_total_end_time);
+  printf("Manim frontend completed. Total elapsed: %.4f seconds\n", perf_total_time);
+  printf("Cum surface destroy time: %.4f seconds\n", perf_surface_destroy_cum_time);
   
   return 0;
 }

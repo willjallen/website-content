@@ -34,7 +34,7 @@ typedef struct arena_t {
  *
  * @return Pointer to a newly created arena, or NULL on allocation failure.
  */
-arena_t *arena_alloc(void);
+static arena_t *arena_alloc(void);
 
 /**
  * @brief Allocate and initialize a new memory arena.
@@ -47,14 +47,14 @@ arena_t *arena_alloc(void);
  *
  * @return Pointer to a newly created arena, or NULL on allocation failure.
  */
-arena_t *arena_alloc_spec(size_t virtual_upper_bound);
+static arena_t *arena_alloc_spec(size_t virtual_upper_bound);
 
 /**
  * @brief Release all memory owned by an arena and destroy it.
  *
  * @param arena Pointer returned by arena_alloc().
  */
-void arena_release(arena_t *arena);
+static void arena_release(arena_t *arena);
 
 /**
  * @brief Allocate an uninitialized block from the arena.
@@ -66,7 +66,7 @@ void arena_release(arena_t *arena);
  * @param size  Number of bytes requested.
  * @return Pointer to the start of the block, or NULL if out of space.
  */
-void *arena_push(arena_t *arena, size_t size);
+static void *arena_push(arena_t *arena, size_t size);
 
 /**
  * @brief Allocate a zero‑initialised block from the arena.
@@ -77,18 +77,18 @@ void *arena_push(arena_t *arena, size_t size);
  * @param size  Number of bytes requested.
  * @return Pointer to the start of the block, or NULL if out of space.
  */
-void *arena_push_zero(arena_t *arena, size_t size);
+static void *arena_push_zero(arena_t *arena, size_t size);
 
-#define push_array(arena, type, count) \
+#define arena_push_array(arena, type, count) \
         (type *)arena_push((arena), sizeof(type) * (count))
 
-#define push_array_zero(arena, type, count) \
+#define arena_push_array_zero(arena, type, count) \
         (type *)arena_push_zero((arena), sizeof(type) * (count))
 
-#define push_struct(arena, type) \
+#define arena_push_struct(arena, type) \
         push_array((arena), type, 1)
 
-#define push_struct_zero(arena, type) \
+#define arena_push_struct_zero(arena, type) \
         push_array_zero((arena), type, 1)
 
 /**
@@ -100,14 +100,14 @@ void *arena_push_zero(arena_t *arena, size_t size);
  * @param arena Arena to pop from.
  * @param size  Number of bytes to pop.
  */
-void arena_pop(arena_t *arena, size_t size);
+static void arena_pop(arena_t *arena, size_t size);
 
 /**
  * @brief Get the current position (size in use) of the arena.
  * 
  * @param arena Arena in use.
  */
-size_t arena_get_pos(arena_t *arena);
+static size_t arena_get_pos(arena_t *arena);
 
 /**
  * @brief Rewind the arena to a previously saved position.
@@ -115,14 +115,14 @@ size_t arena_get_pos(arena_t *arena);
  * @param arena Arena to set position to.
  * @param pos Value previously obtained from arena_get_pos().
  */
-void arena_set_pos_back(arena_t *arena, size_t pos);
+static void arena_set_pos_back(arena_t *arena, size_t pos);
 
 /**
  * @brief Clear the arena without releasing its backing memory.
  *
  * @param arena Arena to clear.
  */
-void arena_clear(arena_t *arena);
+static void arena_clear(arena_t *arena);
 
 //*******************************************//
 
