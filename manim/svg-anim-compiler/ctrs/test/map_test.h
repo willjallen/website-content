@@ -11,8 +11,8 @@
 #ifndef MAP_TESTS_H
 #define MAP_TESTS_H
 
+#include "ctrs/map.h"
 #include "common/core.h"
-#include "map.h"
 
 #include <assert.h>
 #include <inttypes.h>

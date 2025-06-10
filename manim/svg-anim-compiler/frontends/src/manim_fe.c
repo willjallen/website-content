@@ -7,10 +7,9 @@
 #include <string.h>
 
 #include "ctrs/map.h"
-#include "ctrs/map_test.h"
 
-#include "common/core.h"
 #include "common/arena.h"
+#include "common/core.h"
 #include "manim/manim_fe.h"
 
 /**

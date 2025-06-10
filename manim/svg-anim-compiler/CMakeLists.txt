@@ -4,7 +4,6 @@ project(svgAnimCompiler LANGUAGES C)
 
 add_executable(svgAnimCompiler main.c
         ctrs/include/ctrs/map.h
-        ctrs/include/ctrs/map_test.h
         frontends/src/manim_fe.c
         frontends/include/manim/manim_fe.h
         common/include/common/core.h
@@ -142,6 +141,6 @@ if(MSVC)
 
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-#            -O3
+            -O3
     )
 endif()

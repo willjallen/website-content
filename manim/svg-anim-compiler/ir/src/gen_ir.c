@@ -1,5 +1,6 @@
 
 
+#include "common/arena.h"
 #include "common/core.h"
 #include "ctrs/map.h"
 #include "ir/ir.h"
@@ -21,6 +22,8 @@ SvgAnimStatus gen_ir_driver(const svg_frame_buffers_t *svg_frame_buffers) {
  */
 
   // map_t data_tag_to_elem_id_map;
+
+  arena_t *ir_arena = arena_alloc();
   
  for (size_t i = 0; i < svg_frame_buffers->num_frames; i++) {
   buffer_t *svg_frame = &svg_frame_buffers->svg_frames[i];
@@ -50,24 +53,28 @@ SvgAnimStatus gen_ir_driver(const svg_frame_buffers_t *svg_frame_buffers) {
      // Find the terminating '>' for this tag
      char *path_end = strchr(path_start, '>');
      if (!path_end) {
-       // Malformed SVG – use end of buffer as a fallback
+       // Malformed SVG - use end of buffer as a fallback
        path_end = svg_frame->data + svg_frame->size;
      }
-     ++path_end;                       // include the '>' in the slice
+     // Include closing '>'
+     ++path_end;
 
      ranges[j].start  = path_start;
      ranges[j].end    = path_end;
      ranges[j].length = (size_t)(path_end - path_start);
 
-     search_pos = path_end;            // advance search cursor
+     search_pos = path_end;
    }
 
+   char **path_strs = arena_push(ir_arena, sizeof(size_t) * num_paths);
+   
    for (size_t j = 0; j < num_paths; j++) {
-     char tmp[2048];                                 // adjust size as needed
-     size_t copy_len = ranges[j].length < sizeof(tmp) - 1 ? ranges[j].length : sizeof(tmp) - 1;
-     memcpy(tmp, ranges[j].start, copy_len);
-     tmp[copy_len] = '\0';
-     printf("%s\n\n", tmp);
+     char *path_str = arena_push(ir_arena, ranges[j].length + 1); 
+     memcpy(path_str, ranges[j].start, ranges[j].length);
+     path_str[ranges[j].length] = '\0';
+     path_strs[j] = path_str;
+     
+     // printf("%s\n\n", path_strs[j]);
    }
    
    // if ()
