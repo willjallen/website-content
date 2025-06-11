@@ -1,0 +1,2 @@
+- Add a special bridge between manim_fe and gen_ir, concatenating all <path>s
+just to immediately split them back out is a waste

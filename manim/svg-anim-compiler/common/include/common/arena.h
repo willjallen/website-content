@@ -22,7 +22,7 @@ typedef struct arena_t {
     size_t capacity;      /* bytes reserved (virtual)   */
     size_t committed;     /* bytes with R/W access      */
     size_t pos;           /* bytes currently in use     */
-    size_t page_size;       /* OS page size (cached)      */
+    size_t page_size;     /* OS page size (cached)      */
 } arena_t;
 
 /**
@@ -86,10 +86,10 @@ static void *arena_push_zero(arena_t *arena, size_t size);
         (type *)arena_push_zero((arena), sizeof(type) * (count))
 
 #define arena_push_struct(arena, type) \
-        push_array((arena), type, 1)
+        arena_push_array((arena), type, 1)
 
 #define arena_push_struct_zero(arena, type) \
-        push_array_zero((arena), type, 1)
+        arena_push_array_zero((arena), type, 1)
 
 /**
  * @brief Pop bytes off the arena "stack".

@@ -1,90 +1,80 @@
 #ifndef CORE_H
 #define CORE_H
 
-#if _MSC_VER
-#define likely(x) x
-#define unlikely(x) x
-#else
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#endif
+#include "defs.h"
+#include "arena.h"
 #include <_time.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdlib.h>
-#include <string.h>
 
 
-#define ALIGN_UP(value, alignment)                                             \
-(((value) + ((alignment) - 1)) & ~((alignment) - 1))
+/*
+ * -----------------------------------------------------------------------------
+ *  Status Codes
+ * -----------------------------------------------------------------------------
+ */
 
-typedef enum SvgAnimStatus { SVG_ANIM_STATUS_SUCCESS, SVG_ANIM_STATUS_NO_MEMORY } SvgAnimStatus;
+typedef enum SvgAnimStatus {
+  SVG_ANIM_STATUS_SUCCESS,
+  SVG_ANIM_STATUS_NO_MEMORY,
+  SVG_ANIM_STATUS_MALFORMED_SVG
+} SvgAnimStatus;
 
-typedef struct buffer_t {
-  char *data;
-  size_t size;
-  size_t capacity;
-} buffer_t;
+/*
+ * -----------------------------------------------------------------------------
+ *  SVGs
+ * -----------------------------------------------------------------------------
+ */
 
-inline static void init_buffer(buffer_t *buffer) {
-  buffer->size = 0;
-  buffer->capacity = 0;
-  buffer->data = NULL;
+/**
+ * @brief Descriptor for an svg within a blob
+ */
+typedef struct svg_record_t {
+  size_t length;
+  size_t offset;
+} svg_record_t;
+
+/**
+ * @brief Sequence of svgs contained within a blob
+ * @note To read an svg, use \n@code svg_get_data(svg_frames, i)@endcode for
+ * convenience
+ */
+typedef struct svg_frames_t {
+  size_t num_frames;
+  svg_record_t *frames;
+  void *blob;
+} svg_frames_t;
+
+static const void *svg_get_data(const svg_frames_t *pack, const size_t i)
+{
+  return (const unsigned char *)pack->blob + pack->frames[i].offset;
 }
 
+/*
+ * -----------------------------------------------------------------------------
+ *  IR
+ * -----------------------------------------------------------------------------
+ */
 
-inline static SvgAnimStatus buffer_writer(void *closure, const void *data, const size_t length) {
-  buffer_t *buffer = closure;
+// typedef struct ir_frames_t {
+//   size_t num_frames;
+//   buffer_t *ir_frames;
+// } ir_frame_buffers_t;
 
-  if (!length)
-    return SVG_ANIM_STATUS_SUCCESS;
-
-  const size_t needed = buffer->size + length;
-  
-  if (needed > buffer->capacity) {
-    size_t new_capacity = buffer->capacity ? buffer->capacity * 2 : 1024;
-
-    while (new_capacity < needed) {
-      if (new_capacity > SIZE_MAX / 2) {
-        return SVG_ANIM_STATUS_NO_MEMORY;
-      }
-      new_capacity *= 2;
-    }
-
-    void *new_data = realloc(buffer->data, new_capacity);
-    if (!new_data)
-      return SVG_ANIM_STATUS_NO_MEMORY;
-
-    buffer->data = new_data;
-    buffer->capacity = new_capacity;
-  }
-
-  memcpy((unsigned char *)buffer->data + buffer->size, data, length);
-  buffer->size += length;
-
-  return SVG_ANIM_STATUS_SUCCESS;
-}
-
-typedef struct svg_frame_buffers_t {
-  size_t num_frames;
-  buffer_t *svg_frames;
-} svg_frame_buffers_t;
-
-typedef struct ir_frame_buffers_t {
-  size_t num_frames;
-  buffer_t *ir_frames;
-} ir_frame_buffers_t;
-
+/*
+ * -----------------------------------------------------------------------------
+ *  Timespec
+ * -----------------------------------------------------------------------------
+ */
 
 typedef struct timespec timespec_t;
 
-static inline timespec_t ts_now(void) {
+static timespec_t ts_now(void) {
   timespec_t ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return ts;
 }
 
-static inline double ts_elapsed_sec(const timespec_t start, const timespec_t end) {
+static double ts_elapsed_sec(const timespec_t start, const timespec_t end) {
   return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
 }
 

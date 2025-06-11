@@ -109,7 +109,19 @@ if(MSVC)
     )
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-            -Wall -Wextra -Wpedantic -Werror -Wno-error=unused-function
+            -Wall 
+            -Wextra
+            -Wpedantic
+            -Werror
+            -Wno-unused-function
+            -Wno-unused-parameter
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+    )
+
+    # The sanitizers need to be linked as well
+    target_link_options(svgAnimCompiler PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer
     )
 endif()
 
@@ -141,6 +153,6 @@ if(MSVC)
 
 else()  # GCC / Clang
     target_compile_options(svgAnimCompiler PRIVATE
-            -O3
+#            -O3
     )
 endif()

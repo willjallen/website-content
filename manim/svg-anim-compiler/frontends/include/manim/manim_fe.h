@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <cairo.h>
+#include <stdbool.h>
 
 
 #include "common/core.h"
@@ -59,21 +60,21 @@
 typedef struct {
   char magic[4]; /** RGBA **/
   float vals[4];
-} rgba_t;
+} manim_rgba_t;
 
 typedef struct {
   char magic[4]; /** QUAD **/
   float x1, y1;
   float x2, y2;
   float x3, y3;
-} quad_t;
+} manim_quad_t;
 
 typedef struct {
   char magic[4]; /** SUBP **/
   float x, y;
   uint32_t quad_count;
-  quad_t *quads;
-} subpath_t;
+  manim_quad_t *quads;
+} manim_subpath_t;
 
 typedef struct {
   char magic[4]; /** VMOB **/
@@ -95,26 +96,26 @@ typedef struct {
   /** Subpaths **/
   uint32_t subpath_count;
 
-  rgba_t *stroke_bg_rgbas;
-  rgba_t *stroke_rgbas;
-  rgba_t *fill_rgbas;
+  manim_rgba_t *stroke_bg_rgbas;
+  manim_rgba_t *stroke_rgbas;
+  manim_rgba_t *fill_rgbas;
 
-  subpath_t *subpaths;
+  manim_subpath_t *subpaths;
 
-} vmo_t;
+} manim_vmo_t;
 
 typedef struct {
   char magic[4]; /** FRAM **/
   uint32_t vmo_count;
-  vmo_t *vmos;
-} frame_t;
+  manim_vmo_t *vmos;
+} manim_frame_t;
 
 typedef struct {
   char magic[4]; /** CTXT **/
   uint32_t version;
   double pixel_width, pixel_height;
   double frame_width, frame_height;
-} file_header_t;
+} manim_file_header_t;
 
 #pragma pack(pop)
 
@@ -124,9 +125,9 @@ typedef struct {
  * ===================================
  */
 
-int read_header(FILE *fp, file_header_t *file_header);
-int read_frame(arena_t *frame_arena, FILE *fp, frame_t *frame);
-void free_frame(const frame_t *frame);
+int read_header(FILE *fp, manim_file_header_t *file_header);
+int read_frame(arena_t *frame_arena, FILE *fp, manim_frame_t *frame);
+void free_frame(const manim_frame_t *frame);
 
 /**
  * ===================================
@@ -136,23 +137,31 @@ void free_frame(const frame_t *frame);
 
 typedef enum context_color_t { FILL, STROKE, STROKE_BG } context_color_t;
 
-int init_cairo_ctx(cairo_t *ctx, const file_header_t *file_header);
+int init_cairo_ctx(cairo_t *ctx, const manim_file_header_t *file_header);
 
-int render_frame(cairo_t *ctx, const frame_t *frame);
-
-int render_vmo(cairo_t *ctx, const vmo_t *vmo);
+int render_vmo(cairo_t *ctx, const manim_vmo_t *vmo);
 
 cairo_status_t cairo_buffer_writer(void *closure, const unsigned char *data,
                              unsigned int length);
 
-void set_cairo_context_color(cairo_t *ctx, const vmo_t *vmo,
+void set_cairo_context_color(cairo_t *ctx, const manim_vmo_t *vmo,
                              context_color_t context_color_type);
 
-void apply_stroke(cairo_t *ctx, const vmo_t *vmo, bool background);
+void apply_stroke(cairo_t *ctx, const manim_vmo_t *vmo, bool background);
 
-void apply_fill(cairo_t *ctx, const vmo_t *vmo);
+void apply_fill(cairo_t *ctx, const manim_vmo_t *vmo);
 
-int manim_fe_driver(const char *in_file_path,
-                    svg_frame_buffers_t *out_svg_frame_buffer);
+/**
+ *  @brief Ingests a data binary from the manim-fast-svg plugin and emits a
+ *  sequence of svg frames with data-tag ids appended to each <path>.
+ *
+ * @param svg_frames_blob_arena Arena for svg blobs.
+ * @param svg_frames_record_arena Arena for svg records.
+ * @param file_path Input manim data binary to process.
+ * @param out_svg_frames Output tagged svg frames.
+ * @return
+ */
+int manim_fe_driver(arena_t *svg_frames_blob_arena, arena_t *svg_frames_record_arena, const char *file_path,
+                    svg_frames_t **out_svg_frames);
 
 #endif // MANIM_FE_H
