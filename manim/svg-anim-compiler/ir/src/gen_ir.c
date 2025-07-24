@@ -13,11 +13,62 @@ typedef struct range_t {
   size_t length;
 } range_t;
 
-void gen_path_ir(char* svg_path, size_t length) {
+
+/**
+ * @brief Descriptor for an token within a blob
+ */
+typedef struct token_pair_record_t {
+  size_t key_length;
+  size_t key_offset;
+  size_t value_length;
+  size_t value_offset;
+} token_pair_record_t;
+
+/**
+ * @brief Sequence of svgs contained within a blob
+ * @note To read an svg, use \n@code svg_get_data(svg_frames, i)@endcode for
+ * convenience
+ */
+typedef struct token_pair_buffer_t {
+  size_t num_pairs;
+  token_pair_record_t *token_pairs;
+  void *blob;
+} token_pair_buffer_t;
+
+static const void *token_get_key(const token_pair_buffer_t *buffer, const size_t i)
+{
+  return (const unsigned char *)buffer->blob + buffer->token_pairs[i].key_offset;
+}
+
+static const void *token_get_value(const token_pair_buffer_t *buffer, const size_t i)
+{
+  return (const unsigned char *)buffer->blob + buffer->token_pairs[i].value_offset;
+}
+
+void tokenize_path(arena_t token_stack_area, char* svg_path, size_t num_tokens) {
+  /** Each token is of the form "x"="y". Termination is at > */
+  
   
 }
 
-SvgAnimStatus gen_ir_driver(const svg_frames_t *svg_frames) {
+void gen_path_ir(arena_t *token_record_scratch_arena,
+  arena_t *token_blob_scratch_arena,
+  arena_t *ir_arena, char* svg_path, size_t length) {
+
+  // Initialize the token_pair_buffer
+  // token_pair_buffer_t *token_pair_buffer = arena_push_struct(token_blob_scratch_arena, token_pair_buffer_t);
+  
+  
+  // ir_op_t op = {
+  //   .op        = IR_OP_SET_ATTR,
+  //   .set_attr  = { .element_id = 1234,
+  //                  .attribute_type = FILL,
+  //                  .attribute_value_str = "red" }
+  // };
+  
+}
+
+SvgAnimStatus gen_ir_driver(arena_t *ir_arena, const svg_frames_t *svg_frames, ir_op_frames_t **ir_op_frames) {
 
   /**
    * For each frame:
@@ -28,15 +79,15 @@ SvgAnimStatus gen_ir_driver(const svg_frames_t *svg_frames) {
   // map_t data_tag_to_elem_id_map;
 
   // arena_t *ir_arena = arena_alloc();
+  arena_t *scratch_arena = arena_alloc();
 
   
+  arena_t *svg_path_scratch_arena = arena_alloc();
 
   for (size_t i = 0; i < svg_frames->num_frames; i++) {
 
     svg_record_t svg_record = svg_frames->frames[i];
     char *svg_blob = (char *)svg_get_data(svg_frames, i);
-
-    arena_t *svg_path_scratch_arena = arena_alloc();
     
     /**
      * Poor man's svg parser.
@@ -61,8 +112,9 @@ SvgAnimStatus gen_ir_driver(const svg_frames_t *svg_frames) {
             curr_path_len);
           
           dest[curr_path_len] = '\0';
+          curr_path_len += 1;
           
-          gen_path_ir(dest, curr_path_len + 1);
+            gen_path_ir(scratch_arena, scratch_arena, ir_arena, dest, curr_path_len);
 
           curr_path_len = 0;
           tracking = false;
@@ -76,13 +128,6 @@ SvgAnimStatus gen_ir_driver(const svg_frames_t *svg_frames) {
         }
       }
     }
-
-    // ir_op_t op = {
-    //   .op        = IR_OP_SET_ATTR,
-    //   .set_attr  = { .element_id = 1234,
-    //                  .attribute_type = FILL,
-    //                  .attribute_value_str = "red" }
-    // };
   }
 
   return SVG_ANIM_STATUS_SUCCESS;

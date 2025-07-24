@@ -147,13 +147,13 @@ void set_cairo_context_color(cairo_t *ctx, const manim_vmo_t *vmo,
 
   uint32_t rgba_count = 0;
   manim_rgba_t *rgbas = NULL;
-  if (context_color_type == FILL) {
+  if (context_color_type == C_FILL) {
     rgba_count = vmo->fill_rgbas_count;
     rgbas = vmo->fill_rgbas;
-  } else if (context_color_type == STROKE) {
+  } else if (context_color_type == C_STROKE) {
     rgba_count = vmo->stroke_rgbas_count;
     rgbas = vmo->stroke_rgbas;
-  } else if (context_color_type == STROKE_BG) {
+  } else if (context_color_type == C_STROKE_BG) {
     rgba_count = vmo->stroke_bg_rgbas_count;
     rgbas = vmo->stroke_bg_rgbas;
   }
@@ -184,13 +184,13 @@ void apply_stroke(cairo_t *ctx, const manim_vmo_t *vmo, bool background) {
   if (width == 0)
     return;
 
-  set_cairo_context_color(ctx, vmo, background ? STROKE_BG : STROKE);
+  set_cairo_context_color(ctx, vmo, background ? C_STROKE_BG : C_STROKE);
   cairo_set_line_width(ctx, width * 0.01); // 0.01?
   cairo_stroke_preserve(ctx);
 }
 
 void apply_fill(cairo_t *ctx, const manim_vmo_t *vmo) {
-  set_cairo_context_color(ctx, vmo, FILL);
+  set_cairo_context_color(ctx, vmo, C_FILL);
   cairo_fill_preserve(ctx);
 }
 

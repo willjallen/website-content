@@ -135,7 +135,7 @@ void free_frame(const manim_frame_t *frame);
  * ===================================
  */
 
-typedef enum context_color_t { FILL, STROKE, STROKE_BG } context_color_t;
+typedef enum context_color_t { C_FILL, C_STROKE, C_STROKE_BG } context_color_t;
 
 int init_cairo_ctx(cairo_t *ctx, const manim_file_header_t *file_header);
 

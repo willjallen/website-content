@@ -34,8 +34,8 @@ typedef struct svg_record_t {
 } svg_record_t;
 
 /**
- * @brief Sequence of svgs contained within a blob
- * @note To read an svg, use \n@code svg_get_data(svg_frames, i)@endcode for
+ * @brief Sequence of svgs contained within a blob. One svg per frame.
+ * @note To read an svg, use \n@code svg_get_data(svg_frames, frame_num)@endcode for
  * convenience
  */
 typedef struct svg_frames_t {
@@ -44,9 +44,15 @@ typedef struct svg_frames_t {
   void *blob;
 } svg_frames_t;
 
-static const void *svg_get_data(const svg_frames_t *pack, const size_t i)
+/**
+ * @brief Returns a pointer to the single associated svg to a given frame.
+ * @param svg_frames The structure containing the svg frames blob
+ * @param frame_num Frame number to retrieve
+ * @return Pointer to the svg for the given frame
+ */
+static const void *svg_get_data(const svg_frames_t *svg_frames, const size_t frame_num)
 {
-  return (const unsigned char *)pack->blob + pack->frames[i].offset;
+  return (const unsigned char *)svg_frames->blob + svg_frames->frames[frame_num].offset;
 }
 
 /*
@@ -55,10 +61,7 @@ static const void *svg_get_data(const svg_frames_t *pack, const size_t i)
  * -----------------------------------------------------------------------------
  */
 
-// typedef struct ir_frames_t {
-//   size_t num_frames;
-//   buffer_t *ir_frames;
-// } ir_frame_buffers_t;
+
 
 /*
  * -----------------------------------------------------------------------------

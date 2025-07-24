@@ -36,7 +36,7 @@ RANGE_LINEAR              (elementId, attrId, a, b, frameStart, frameEnd)
                           - attr = a*t + b   over given frame span
 
 RANGE_QUADRATIC           (elementId, attrId, a, b, c, frameStart, frameEnd)
-                          - attr = a*t² + b*t + c
+                          - attr = a*t^2 + b*t + c
 
 RANGE_STEP                (elementId, attrId, kRuns, [len,val] × kRuns)
                           - Piece-wise constant run-length list
@@ -169,5 +169,40 @@ typedef struct {
     ir_op_set_attr_t set_attr;
   };
 } ir_op_t;
+
+
+/**
+ * @brief Descriptor for an ir_op within a blob
+ */
+typedef struct ir_op_record_t {
+  size_t num_ops;
+  size_t offset;
+} ir_op_record_t;
+
+/**
+ * @brief Sequence of ir_ops contained within a blob. There
+ * @note To read a frame of ir_ops, use \n@code ir_op_get_data(ir_op_frames_t,
+ * frame_num, ir_op_index)@endcode for convenience
+ */
+typedef struct ir_op_frames_t {
+  size_t num_frames;
+  ir_op_record_t *frames;
+  void *blob;
+} ir_op_frames_t;
+
+/**
+ *
+ * @param ir_op_frames The structure containing the ir_op frames blob
+ * @param frame_num Frame number to retrieve
+ * @param ir_op_index ir_op within the frame to retrieve
+ * @return A pointer to the ir_op for the given frame and ir_op index within
+ * the frame.
+ */
+static const ir_op_t *ir_op_get_data(const ir_op_frames_t *ir_op_frames,
+                                     const size_t frame_num,
+                                     const size_t ir_op_index) {
+  return (const ir_op_t *)ir_op_frames->blob +
+         ir_op_frames->frames[frame_num].offset + ir_op_index * sizeof(ir_op_t);
+}
 
 #endif // IR_H
